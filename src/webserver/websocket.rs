@@ -1,4 +1,4 @@
-use async_trait::async_trait;
+use axum::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, FutureExt, SinkExt, StreamExt};
 use std::{collections::HashMap, sync::Arc};

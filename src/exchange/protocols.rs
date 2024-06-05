@@ -16,8 +16,7 @@ use cassry::{
 };
 use chrono::prelude::*;
 use futures::FutureExt;
-use num::{FromPrimitive, ToPrimitive};
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::*, Decimal};
 use serde::{
     de::{self, SeqAccess, Visitor},
     ser::SerializeTuple,

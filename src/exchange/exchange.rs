@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Weak;
 use std::{collections::HashMap, sync::Arc};
 
-use async_trait::async_trait;
+use axum::async_trait;
 use bitflags::bitflags;
 use chrono::Utc;
 use futures::FutureExt;
