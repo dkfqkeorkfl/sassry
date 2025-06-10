@@ -6,7 +6,7 @@ use super::super::exchange::*;
 use super::super::webserver::websocket::*;
 use cassry::{tokio::sync::RwLock, *};
 
-use axum::async_trait;
+use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use futures::future;
 use rust_decimal::Decimal;

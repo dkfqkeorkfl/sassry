@@ -1,7 +1,9 @@
 use axum::{
-    extract::{Host, State},
+    extract::State,
     http::{StatusCode, Uri},
 };
+
+use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 
 use std::net::{IpAddr, SocketAddr};

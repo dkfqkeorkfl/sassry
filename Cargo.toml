@@ -16,29 +16,31 @@ before-build = true
 cassry = { path = "../cassry" }
 
 # tags
-serde = { version = "1.0.163", features = ["derive", "rc"] }
-serde_with = "3.0.0"
-derive_more = "0.99.17"
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_with = "3.12.0"
+derive_more = { version = "2.0.1", features = ["full"] }
+async-trait = "0.1.87"
 
 # tokio stream
-tokio-tungstenite = { version = "0.21.0", features = [
+tokio-tungstenite = { version = "0.26.2", features = [
     "__rustls-tls",
     "handshake",
     "rustls-tls-native-roots",
 ] }
-tokio-stream = "0.1.15"
+tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.8", features = ["codec"] }
 
 # webserver
-axum = { version = "0.7.4", features = ["form", "json", "tokio", "ws"] }
-axum-server = { version = "0.6.0", features = ["tls-rustls"] }
-tower = { version = "0.4", features = ["full"] }
+axum = { version = "0.8.4", features = ["form", "json", "tokio", "ws"] }
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+tower = { version = "0.5.2", features = ["full"] }
+axum-extra = { version = "0.10.1", features = ["typed-header"] }
 
 # others
 base64 = "0.22.0"
-bitflags = "2.2.1"
-rand = "0.8.4"
-url = "2.2.2"
+bitflags = "2.9.1"
+rand = { version = "0.9.1", features = ["std"] }
+url = "2.5.4"
 
 ta = "0.5.0"
 meval = "0.2"

@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Ok;
-use axum::async_trait;
+use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, FutureExt};
 use tokio::sync::RwLock;

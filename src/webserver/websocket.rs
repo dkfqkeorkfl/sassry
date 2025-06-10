@@ -1,4 +1,4 @@
-use axum::async_trait;
+use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, FutureExt, SinkExt, StreamExt};
 use std::{collections::HashMap, sync::Arc};
@@ -32,10 +32,10 @@ pub enum Message {
 impl Message {
     pub fn from_axum(msg: AxumMessage) -> Self {
         match msg {
-            AxumMessage::Text(text) => Message::Text(text),
-            AxumMessage::Binary(data) => Message::Binary(data),
-            AxumMessage::Ping(data) => Message::Ping(data),
-            AxumMessage::Pong(data) => Message::Pong(data),
+            AxumMessage::Text(text) => Message::Text(text.to_string()),
+            AxumMessage::Binary(data) => Message::Binary(data.into()),
+            AxumMessage::Ping(data) => Message::Ping(data.into()),
+            AxumMessage::Pong(data) => Message::Pong(data.into()),
             AxumMessage::Close(frame) => {
                 let nf = frame.map(|f| (f.code, f.reason.to_string()));
                 Message::Close(nf)
@@ -45,10 +45,10 @@ impl Message {
 
     pub fn from_tungstenite(msg: TungsteniteMessage) -> Self {
         match msg {
-            TungsteniteMessage::Text(text) => Message::Text(text),
-            TungsteniteMessage::Binary(data) => Message::Binary(data),
-            TungsteniteMessage::Ping(data) => Message::Ping(data),
-            TungsteniteMessage::Pong(data) => Message::Pong(data),
+            TungsteniteMessage::Text(text) => Message::Text(text.to_string()),
+            TungsteniteMessage::Binary(data) => Message::Binary(data.into()),
+            TungsteniteMessage::Ping(data) => Message::Ping(data.into()),
+            TungsteniteMessage::Pong(data) => Message::Pong(data.into()),
             TungsteniteMessage::Frame(_frame) => Message::Close(None),
             TungsteniteMessage::Close(frame) => {
                 let nf = frame.map(|f| (u16::from(f.code), f.reason.to_string()));
@@ -68,43 +68,24 @@ impl Message {
 // AxumMessage에 대한 From 트레이트 구현
 impl From<AxumMessage> for Message {
     fn from(msg: AxumMessage) -> Self {
-        match msg {
-            AxumMessage::Text(text) => Message::Text(text),
-            AxumMessage::Binary(data) => Message::Binary(data),
-            AxumMessage::Ping(data) => Message::Ping(data),
-            AxumMessage::Pong(data) => Message::Pong(data),
-            AxumMessage::Close(Some(close_frame)) => {
-                Message::Close(Some((close_frame.code, close_frame.reason.into())))
-            }
-            AxumMessage::Close(None) => Message::Close(None),
-        }
+        Message::from_axum(msg)
     }
 }
 
 // TungsteniteMessage에 대한 From 트레이트 구현
 impl From<TungsteniteMessage> for Message {
     fn from(msg: TungsteniteMessage) -> Self {
-        match msg {
-            TungsteniteMessage::Text(text) => Message::Text(text),
-            TungsteniteMessage::Binary(data) => Message::Binary(data),
-            TungsteniteMessage::Ping(data) => Message::Ping(data),
-            TungsteniteMessage::Pong(data) => Message::Pong(data),
-            TungsteniteMessage::Close(Some(close_frame)) => {
-                Message::Close(Some((close_frame.code.into(), close_frame.reason.into())))
-            }
-            TungsteniteMessage::Close(None) => Message::Close(None),
-            _ => unimplemented!(),
-        }
+        Message::from_tungstenite(msg)
     }
 }
 
 impl Into<AxumMessage> for Message {
     fn into(self) -> AxumMessage {
         match self {
-            Message::Text(text) => AxumMessage::Text(text),
-            Message::Binary(data) => AxumMessage::Binary(data),
-            Message::Ping(data) => AxumMessage::Ping(data),
-            Message::Pong(data) => AxumMessage::Pong(data),
+            Message::Text(text) => AxumMessage::Text(text.into()),
+            Message::Binary(data) => AxumMessage::Binary(data.into()),
+            Message::Ping(data) => AxumMessage::Ping(data.into()),
+            Message::Pong(data) => AxumMessage::Pong(data.into()),
             Message::Close(frame) => {
                 let frame = frame.map(|(code, reason)| axum::extract::ws::CloseFrame {
                     code: code.into(),
@@ -120,10 +101,10 @@ impl Into<AxumMessage> for Message {
 impl Into<TungsteniteMessage> for Message {
     fn into(self) -> TungsteniteMessage {
         match self {
-            Message::Text(text) => TungsteniteMessage::Text(text),
-            Message::Binary(data) => TungsteniteMessage::Binary(data),
-            Message::Ping(data) => TungsteniteMessage::Ping(data),
-            Message::Pong(data) => TungsteniteMessage::Pong(data),
+            Message::Text(text) => TungsteniteMessage::Text(text.into()),
+            Message::Binary(data) => TungsteniteMessage::Binary(data.into()),
+            Message::Ping(data) => TungsteniteMessage::Ping(data.into()),
+            Message::Pong(data) => TungsteniteMessage::Pong(data.into()),
             Message::Close(frame) => TungsteniteMessage::Close(frame.map(|(code, reason)| {
                 tokio_tungstenite::tungstenite::protocol::CloseFrame {
                     code: code.into(),
