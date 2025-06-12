@@ -1823,7 +1823,6 @@ pub struct ExchangeParam {
     pub kind: MarketOpt,
 }
 
-#[derive(Debug)]
 pub struct ExchangeContext {
     pub param: ExchangeParam,
     pub storage: ExchangeStorage,

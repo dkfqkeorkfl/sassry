@@ -35,6 +35,7 @@ axum = { version = "0.8.4", features = ["form", "json", "tokio", "ws"] }
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 tower = { version = "0.5.2", features = ["full"] }
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
+oauth2 = "5.0.0"
 
 # others
 base64 = "0.22.0"
