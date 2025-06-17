@@ -15,6 +15,7 @@ before-build = true
 [dependencies]
 cassry = { path = "../cassry" }
 
+
 # tags
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_with = "3.12.0"
@@ -22,7 +23,7 @@ derive_more = { version = "2.0.1", features = ["full"] }
 async-trait = "0.1.87"
 
 # tokio stream
-tokio-tungstenite = { version = "0.26.2", features = [
+tokio-tungstenite = { version = "0.27.0", features = [
     "__rustls-tls",
     "handshake",
     "rustls-tls-native-roots",
@@ -33,15 +34,20 @@ tokio-util = { version = "0.7.8", features = ["codec"] }
 # webserver
 axum = { version = "0.8.4", features = ["form", "json", "tokio", "ws"] }
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
-tower = { version = "0.5.2", features = ["full"] }
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
+tower = { version = "0.5.2", features = ["full"] }
+tower-sessions = "0.14.0"
 oauth2 = "5.0.0"
 
 # others
+# dashmap = "6.1.0"
+moka = { version = "0.12.10", features = ["future"] }
+
 base64 = "0.22.0"
 bitflags = "2.9.1"
 rand = { version = "0.9.1", features = ["std"] }
 url = "2.5.4"
+thiserror = "2.0.10"
 
 ta = "0.5.0"
 meval = "0.2"

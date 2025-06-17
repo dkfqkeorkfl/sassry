@@ -1,7 +1,10 @@
 use axum::response::Redirect;
 use chrono::{DateTime, Duration, Utc};
 use oauth2::{
-    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet, PkceCodeVerifier, RedirectUrl, RevocationErrorResponseType, RevocationUrl, Scope, StandardErrorResponse, StandardRevocableToken, StandardTokenIntrospectionResponse, StandardTokenResponse, TokenResponse, TokenUrl
+    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
+    EndpointNotSet, EndpointSet, PkceCodeVerifier, RedirectUrl, RevocationErrorResponseType,
+    RevocationUrl, Scope, StandardErrorResponse, StandardRevocableToken,
+    StandardTokenIntrospectionResponse, StandardTokenResponse, TokenResponse, TokenUrl,
 };
 
 use cassry::*;
@@ -11,7 +14,7 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleProfile {
-    pub id : String,
+    pub id: String,
     pub name: String,
     pub email: String,
     pub picture: Option<String>,
@@ -103,7 +106,11 @@ impl Inner {
         Ok((Redirect::temporary(auth_url.as_str()), pkce_code_verifier))
     }
 
-    async fn auth_callback(&self, auth_request: AuthRequest, pkce_code_verifier: PkceCodeVerifier) -> anyhow::Result<GoogleProfile> {
+    async fn auth_callback(
+        &self,
+        auth_request: AuthRequest,
+        pkce_code_verifier: PkceCodeVerifier,
+    ) -> anyhow::Result<GoogleProfile> {
         let client = self
             .client
             .as_ref()
@@ -167,7 +174,6 @@ impl Inner {
                             .map(|e| e.as_secs() as i64)
                             .unwrap_or(3600),
                     );
-
             }
         }
 
@@ -181,6 +187,10 @@ pub struct GoogleOAuth {
 }
 
 impl GoogleOAuth {
+    pub fn get_provider(&self) -> &str {
+        "google"
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         let inner = Inner::new()?;
         Ok(Self {
@@ -203,7 +213,11 @@ impl GoogleOAuth {
         inner.login().await
     }
 
-    pub async fn auth_callback(&self, auth_request: AuthRequest, pkce_code_verifier: PkceCodeVerifier) -> anyhow::Result<GoogleProfile> {
+    pub async fn auth_callback(
+        &self,
+        auth_request: AuthRequest,
+        pkce_code_verifier: PkceCodeVerifier,
+    ) -> anyhow::Result<GoogleProfile> {
         let inner = self.inner.read().await;
         inner.auth_callback(auth_request, pkce_code_verifier).await
     }
