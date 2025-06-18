@@ -19,6 +19,12 @@ impl From<tower_sessions::session::Error> for RespError {
     }
 }
 
+impl From<serde_json::Error> for RespError {
+    fn from(err: serde_json::Error) -> Self {
+        RespError::Internal(anyhow::Error::from(err))
+    }
+}
+
 impl IntoResponse for RespError {
     fn into_response(self) -> Response {
         match self {
