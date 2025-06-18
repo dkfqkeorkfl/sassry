@@ -244,7 +244,7 @@ impl CreateFlag {
 impl Inner {
     pub async fn new<ResAPI, Websocket>(
         option: ExchangeParam,
-        recorder: leveldb::Leveldb,
+        recorder: localdb::LocalDB,
         builder: Option<ClientBuilder>,
     ) -> anyhow::Result<Arc<Self>>
     where
@@ -864,7 +864,7 @@ impl Exchange {
     pub async fn new<ResAPI, Websocket>(
         tag: String,
         option: ExchangeParam,
-        recorder: leveldb::Leveldb,
+        recorder: localdb::LocalDB,
         builder: Option<ClientBuilder>,
     ) -> anyhow::Result<Self>
     where

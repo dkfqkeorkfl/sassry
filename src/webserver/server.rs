@@ -24,19 +24,8 @@ pub struct Param {
     pub ping_interval: chrono::Duration,
 }
 
-struct Inner {
-    config: Arc<Param>,
-}
-type InnerPtr = Arc<Inner>;
-
-impl Inner {
-    pub fn new(config: Arc<Param>) -> Self {
-        Inner { config: config }
-    }
-}
-
 pub struct Server {
-    inner: InnerPtr,
+    config: Arc<Param>,
 }
 
 impl Server {
@@ -63,7 +52,10 @@ impl Server {
                     match make_https(host, uri, state) {
                         Ok(uri) => Ok(axum::response::Redirect::permanent(&uri.to_string())),
                         Err(error) => {
-                            cassry::error!("failed to convert URI to HTTPS : {}", error.to_string());
+                            cassry::error!(
+                                "failed to convert URI to HTTPS : {}",
+                                error.to_string()
+                            );
                             Err(StatusCode::BAD_REQUEST)
                         }
                     }
@@ -89,18 +81,14 @@ impl Server {
         let addr = SocketAddr::new(config.addr.clone(), config.https_port.clone());
         let cloned_addr = addr.clone();
         let acceptor = RustlsConfig::from_pem_file(&config.cert, &config.key).await?;
-        tokio::spawn(Server::redirect_http_to_https(config.clone()));
-        tokio::spawn(async move {
-            if let Err(e) = axum_server::bind_rustls(cloned_addr, acceptor)
-                .serve(service)
-                .await
-            {
-                cassry::error!("occur error in server : {}", e.to_string());
-            }
-        });
-
+        if let Err(e) = axum_server::bind_rustls(cloned_addr, acceptor)
+            .serve(service)
+            .await
+        {
+            cassry::error!("occur error in server : {}", e.to_string());
+        }
+        Server::redirect_http_to_https(config.clone()).await?;
         cassry::info!("success that open webserver : addr({})", addr.to_string());
-        let inner = Arc::new(Inner::new(config));
-        Ok(Server { inner: inner })
+        Ok(Server { config: config })
     }
 }

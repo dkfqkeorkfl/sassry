@@ -1827,12 +1827,12 @@ pub struct ExchangeContext {
     pub param: ExchangeParam,
     pub storage: ExchangeStorage,
     pub requester: reqwest::Client,
-    pub recorder: Leveldb,
+    pub recorder: LocalDB,
 }
 pub type ExchangeContextPtr = Arc<ExchangeContext>;
 
 impl ExchangeContext {
-    pub fn new(param: ExchangeParam, recorder: Leveldb, requester: reqwest::Client) -> Self {
+    pub fn new(param: ExchangeParam, recorder: LocalDB, requester: reqwest::Client) -> Self {
         let storage = ExchangeStorage {
             markets: RwLock::new(Default::default()).into(),
             orderbook: RwLock::new(Default::default()).into(),
@@ -1862,7 +1862,7 @@ impl ExchangeContext {
         oid: &str,
         _kind: &MarketKind,
     ) -> anyhow::Result<Option<Arc<(OrderPtr, MarketPtr)>>> {
-        let str = self.recorder.get(oid)?;
+        let str = self.recorder.get(oid.to_string()).await?;
         if str.is_none() {
             return Ok(None);
         }
@@ -1887,19 +1887,19 @@ impl ExchangeContext {
         Ok(Some(ret))
     }
 
-    pub fn save_db_order(&self, order: OrderPtr, market: MarketPtr) -> anyhow::Result<()> {
+    pub async fn save_db_order(&self, order: OrderPtr, market: MarketPtr) -> anyhow::Result<()> {
         let order_val = serde_json::to_value(&order)?;
         let market_val = serde_json::to_value(&market.kind)?;
         let items = vec![order_val, market_val];
         let str = serde_json::to_string(&items)?;
-        self.recorder.put(&order.oid, &str)?;
+        self.recorder.put(order.oid.clone(), str).await?;
         Ok(())
     }
 
     pub async fn cache_order(&self, order: Arc<(OrderPtr, MarketPtr)>) -> anyhow::Result<()> {
         let oid = order.0.oid.clone();
         if let Some(dump) = self.storage.orders.insert(oid, order).await {
-            self.save_db_order(dump.0.clone(), dump.1.clone())?;
+            self.save_db_order(dump.0.clone(), dump.1.clone()).await?;
         }
 
         Ok(())
@@ -1910,9 +1910,9 @@ impl ExchangeContext {
         oid: &String,
         kind: &MarketKind,
     ) -> anyhow::Result<Option<OrderPtr>> {
-        let item = if let Some((result, dump_opt)) = self.storage.orders.get(&oid).await {
+        let item = if let Some((result, dump_opt)) = self.storage.orders.get(oid).await {
             if let Some(dump) = dump_opt {
-                self.save_db_order(dump.0.clone(), dump.1.clone())?;
+                self.save_db_order(dump.0.clone(), dump.1.clone()).await?;
             }
 
             result

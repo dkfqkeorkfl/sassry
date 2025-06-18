@@ -10,11 +10,11 @@ struct Inner {
     tags: Arc<Vec<String>>,
     keys: Arc<HashMap<String, Arc<ExchangeKey>>>,
     instatnts: HashMap<String, exchange::ExchangeWeak>,
-    db: Leveldb,
+    db: LocalDB,
 }
 
 impl Inner {
-    pub fn new(keys: Arc<HashMap<String, Arc<ExchangeKey>>>, db: Leveldb) -> Self {
+    pub fn new(keys: Arc<HashMap<String, Arc<ExchangeKey>>>, db: LocalDB) -> Self {
         Inner {
             tags: Arc::new(keys.keys().cloned().collect::<Vec<_>>()),
             keys: keys,
@@ -102,7 +102,7 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub fn new(keys: Arc<HashMap<String, Arc<ExchangeKey>>>, db: Leveldb) -> Self {
+    pub fn new(keys: Arc<HashMap<String, Arc<ExchangeKey>>>, db: LocalDB) -> Self {
         let inner = Inner::new(keys, db);
         Self {
             ptr: Arc::new(RwLock::new(inner)),

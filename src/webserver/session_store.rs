@@ -21,11 +21,9 @@ impl FastSessionStore {
         }
     }
 
-    /// Redis 키를 생성합니다.
-    /// TODO: Redis 연동 구현 시 사용
-    fn redis_key(session_id: &Id) -> String {
-        format!("session:{}", session_id.to_string())
-    }
+    // fn redis_key(session_id: &Id) -> String {
+    //     format!("session:{}", session_id.to_string())
+    // }
 }
 
 #[async_trait::async_trait]
@@ -36,7 +34,7 @@ impl SessionStore for FastSessionStore {
             .map_err(|e| SeesionError::Encode(e.to_string()))?;
         
         {
-            self.local_cache.put(&record.id.to_string(), &session_json)
+            self.local_cache.put(record.id.to_string(), session_json)
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
         }
@@ -55,7 +53,7 @@ impl SessionStore for FastSessionStore {
             .map_err(|e| SeesionError::Encode(e.to_string()))?;
         
         {
-            self.local_cache.put(&record.id.to_string(), &session_json)
+            self.local_cache.put(record.id.to_string(), session_json)
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
         }
@@ -71,7 +69,7 @@ impl SessionStore for FastSessionStore {
     async fn load(&self, session_id: &Id) -> Result<Option<Record>, SeesionError> {
         // 1. 로컬 캐시에서 조회
         {
-            if let Some(session_json) = self.local_cache.get(&session_id.to_string())
+            if let Some(session_json) = self.local_cache.get(session_id.to_string())
                 .await
                 .map_err(|e| SeesionError::Decode(e.to_string()))? 
             {
@@ -94,7 +92,7 @@ impl SessionStore for FastSessionStore {
     async fn delete(&self, session_id: &Id) -> Result<(), SeesionError> {
         // 로컬 캐시에서 삭제
         {
-            self.local_cache.delete(&session_id.to_string())
+            self.local_cache.delete(session_id.to_string())
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
         }
