@@ -81,13 +81,17 @@ impl Server {
         let addr = SocketAddr::new(config.addr.clone(), config.https_port.clone());
         let cloned_addr = addr.clone();
         let acceptor = RustlsConfig::from_pem_file(&config.cert, &config.key).await?;
-        if let Err(e) = axum_server::bind_rustls(cloned_addr, acceptor)
-            .serve(service)
-            .await
-        {
-            cassry::error!("occur error in server : {}", e.to_string());
-        }
-        Server::redirect_http_to_https(config.clone()).await?;
+        
+        tokio::spawn(Server::redirect_http_to_https(config.clone()));
+        tokio::spawn(async move {
+            if let Err(e) = axum_server::bind_rustls(cloned_addr, acceptor)
+                .serve(service)
+                .await
+            {
+                cassry::error!("occur error in server : {}", e.to_string());
+            }
+        });
+
         cassry::info!("success that open webserver : addr({})", addr.to_string());
         Ok(Server { config: config })
     }
