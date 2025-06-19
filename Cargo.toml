@@ -39,6 +39,7 @@ tower = { version = "0.5.2", features = ["full"] }
 
 # 타워 세션은 사실 main에만 있어도 됨, errors 에서 사용하지만 claims에서 사용하므로 여기에 있음
 tower-sessions = "0.14.0"
+tower-cookies = "0.11.0"
 oauth2 = "5.0.0"
 
 # others

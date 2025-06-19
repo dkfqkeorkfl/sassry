@@ -1,26 +1,14 @@
-use axum::{extract::FromRequestParts, RequestPartsExt};
-// JWT 구현에는 jsonwebtoken, serde 크레이트가 필요합니다.
-// Cargo.toml에 아래 의존성을 추가하세요:
-// jsonwebtoken = "9"
-// serde = { version = "1", features = ["derive"] }
-//
-// 실제 서비스에서는 비밀키 관리, 만료, 알고리즘, 에러처리, 클레임 설계 등 보안에 각별히 신경써야 합니다.
-// TODO: 비밀키 환경변수 관리, 에러 핸들링, 클레임 확장, 알고리즘 선택 등 구현 필요
+use axum::{extract::FromRequestParts, http::StatusCode, response::{IntoResponse, Response}};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use axum_extra::{
-    headers::{authorization::Bearer, Authorization},
-    TypedHeader,
-};
+use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use thiserror::Error;
 use cassry::{
     secrecy::{ExposeSecret, SecretString},
     *,
 };
 
-use super::errors::RespError;
 use tokio::sync::RwLock;
 
 /// 토큰 타입 구분 (access/refresh 등)
@@ -39,6 +27,43 @@ pub enum TokenType {
 impl Default for TokenType {
     fn default() -> Self {
         TokenType::None
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ClaimsError {
+    #[error("Missing cookie header")]
+    MissingCookieHeader,
+
+    #[error("Missing JWT token in cookies")]
+    MissingJwtToken,
+
+    #[error("JWT verification failed: {0}")]
+    InvalidJwt(String),
+
+    #[error("Internal server error")]
+    Internal(anyhow::Error),
+}
+
+impl IntoResponse for ClaimsError {
+    fn into_response(self) -> Response {
+        match &self {
+            ClaimsError::MissingCookieHeader
+            | ClaimsError::MissingJwtToken
+            | ClaimsError::InvalidJwt(_) => {
+                warn!("Claims error: {}", self);
+                (StatusCode::UNAUTHORIZED, self.to_string()).into_response()
+            }
+
+            ClaimsError::Internal(err) => {
+                warn!("Claims internal error: {:?}", err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+                    .into_response()
+            }
+        }
     }
 }
 
@@ -63,11 +88,11 @@ pub struct ClaimsCore<T> {
     pub extra: std::marker::PhantomData<T>,
 }
 
-pub type Claims = ClaimsCore<()>;
-pub type ClaimsWithoutValidation = ClaimsCore<u64>;
+pub type ClaimsFromAccess = ClaimsCore<()>;
+pub type ClaimsForRefresh = ClaimsCore<u64>;
 
-impl From<Claims> for ClaimsWithoutValidation {
-    fn from(claims: Claims) -> Self {
+impl From<ClaimsFromAccess> for ClaimsForRefresh {
+    fn from(claims: ClaimsFromAccess) -> Self {
         Self {
             jti: claims.jti,
             from: claims.from,
@@ -81,7 +106,7 @@ impl From<Claims> for ClaimsWithoutValidation {
     }
 }
 
-impl Default for Claims {
+impl Default for ClaimsFromAccess {
     fn default() -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -101,63 +126,93 @@ impl Default for Claims {
     }
 }
 
-impl<S> FromRequestParts<S> for Claims
+impl<S> FromRequestParts<S> for ClaimsFromAccess
 where
     S: Send + Sync,
 {
-    type Rejection = RespError;
+    type Rejection = ClaimsError;
 
     fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
         async move {
-            let TypedHeader(Authorization(bearer)) = parts
-                .extract::<TypedHeader<Authorization<Bearer>>>()
-                .await
-                .map_err(|_| RespError::Unauthorized("Invalid token".to_string()))?;
+            // 쿠키에서 JWT 토큰 추출
+            let cookies = parts
+                .headers
+                .get("cookie")
+                .and_then(|cookie_header| cookie_header.to_str().ok())
+                .ok_or(ClaimsError::MissingCookieHeader)?;
+
+            // 쿠키 문자열에서 JWT 토큰 찾기
+            let jwt_token = cookies
+                .split(';')
+                .find_map(|cookie| {
+                    let cookie = cookie.trim();
+                    if cookie.starts_with("access=") {
+                        Some(cookie[4..].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or(ClaimsError::MissingJwtToken)?;
 
             let jwt_manager = parts
                 .extensions
-                .get::<JwtIssuer>()
-                .ok_or_else(|| RespError::Unauthorized("JwtManager not found".to_string()))?;
+                .get::<Arc<JwtIssuer>>()
+                .ok_or_else(|| ClaimsError::Internal(anyhow::anyhow!("JwtManager not found")))?;
 
             jwt_manager
-                .verify_jwt(bearer.token(), None)
+                .verify_jwt(&jwt_token, None)
                 .await
-                .map_err(|e| RespError::Unauthorized(e.to_string()))
+                .map_err(|e| ClaimsError::InvalidJwt(e.to_string()))
         }
     }
 }
 
-impl<S> FromRequestParts<S> for ClaimsWithoutValidation
+impl<S> FromRequestParts<S> for ClaimsForRefresh
 where
     S: Send + Sync,
 {
-    type Rejection = RespError;
+    type Rejection = ClaimsError;
 
     fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
         async move {
-            let TypedHeader(Authorization(bearer)) = parts
-                .extract::<TypedHeader<Authorization<Bearer>>>()
-                .await
-                .map_err(|_| RespError::Unauthorized("Invalid token".to_string()))?;
+            // 쿠키에서 JWT 토큰 추출
+            let cookies = parts
+                .headers
+                .get("cookie")
+                .and_then(|cookie_header| cookie_header.to_str().ok())
+                .ok_or(ClaimsError::MissingCookieHeader)?;
+
+            // 쿠키 문자열에서 JWT 토큰 찾기
+            let jwt_token = cookies
+                .split(';')
+                .find_map(|cookie| {
+                    let cookie = cookie.trim();
+                    if cookie.starts_with("access=") {
+                        Some(cookie[4..].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or(ClaimsError::MissingJwtToken)?;
 
             let jwt_manager = parts
                 .extensions
-                .get::<JwtIssuer>()
-                .ok_or_else(|| RespError::Unauthorized("JwtManager not found".to_string()))?;
+                .get::<Arc<JwtIssuer>>()
+                .ok_or_else(|| ClaimsError::Internal(anyhow::anyhow!("JwtManager not found")))?;
 
             let mut validation = Validation::default();
             validation.validate_exp = false;
             jwt_manager
-                .verify_jwt(bearer.token(), Some(validation))
+                .verify_jwt(&jwt_token, Some(validation))
                 .await
                 .map(|claims| claims.into())
-                .map_err(|e| RespError::Unauthorized(e.to_string()))
+                .map_err(|e| ClaimsError::InvalidJwt(e.to_string()))
         }
     }
 }
@@ -190,7 +245,7 @@ impl Inner {
     }
 
     /// JWT 토큰 생성 (HS256) - 클레임 구조체를 직접 받아 생성
-    pub fn generate_jwt(&self, claims: &Claims) -> anyhow::Result<String> {
+    pub fn generate_jwt(&self, claims: &ClaimsFromAccess) -> anyhow::Result<String> {
         encode(
             &Header::default(),
             claims,
@@ -204,8 +259,8 @@ impl Inner {
         &self,
         token: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<Claims> {
-        decode::<Claims>(
+    ) -> anyhow::Result<ClaimsFromAccess> {
+        decode::<ClaimsFromAccess>(
             token,
             &DecodingKey::from_secret(self.secret.expose_secret().as_bytes()),
             &validation.unwrap_or_default(),
@@ -216,7 +271,7 @@ impl Inner {
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
     pub fn login(&self) -> anyhow::Result<(String, String)> {
-        let mut refresh_claims = Claims::default();
+        let mut refresh_claims = ClaimsFromAccess::default();
         refresh_claims.token_type = TokenType::Refresh;
 
         let mut access_claims = refresh_claims.clone();
@@ -236,8 +291,8 @@ impl Inner {
     /// 실제 서비스에서는 refresh_token 재사용 방지, 블랙리스트, 만료, 사용자 상태 등 섬세한 보안 정책 필요
     pub fn refresh_access_token(
         &self,
-        access_token: &ClaimsWithoutValidation,
-        refresh_token: &Claims,
+        access_token: &ClaimsForRefresh,
+        refresh_token: &ClaimsFromAccess,
     ) -> anyhow::Result<(String, String)> {
         // 1. JWT 구조 및 서명, 만료 등 1차 검증
         //let claims = self.jwt_manager.read().await.verify_jwt(refresh_token, None).await?;
@@ -248,7 +303,7 @@ impl Inner {
         // 3. (선택) DB/Redis 등에서 refresh_token 추가 검증 (블랙리스트, 만료, 사용자 상태 등)
         // TODO: self.token_manager.verify_refresh_token(&claims.sub.to_string(), refresh_token) 등 추가
         // 4. 검증 통과 시 새로운 access_token 발급
-        let mut refresh_claims = Claims::default();
+        let mut refresh_claims = ClaimsFromAccess::default();
         refresh_claims.token_type = TokenType::Refresh;
         let mut access_claims = refresh_claims.clone();
         access_claims.token_type = TokenType::Access;
@@ -283,7 +338,7 @@ impl JwtIssuer {
         inner.get_secret()
     }
 
-    pub async fn generate_jwt(&self, claims: &Claims) -> anyhow::Result<String> {
+    pub async fn generate_jwt(&self, claims: &ClaimsFromAccess) -> anyhow::Result<String> {
         let inner = self.inner.read().await;
         inner.generate_jwt(claims)
     }
@@ -292,7 +347,7 @@ impl JwtIssuer {
         &self,
         token: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<Claims> {
+    ) -> anyhow::Result<ClaimsFromAccess> {
         let inner = self.inner.read().await;
         inner.verify_jwt(token, validation)
     }
@@ -304,8 +359,8 @@ impl JwtIssuer {
 
     pub async fn refresh_access_token(
         &self,
-        access_token: &ClaimsWithoutValidation,
-        refresh_token: &Claims,
+        access_token: &ClaimsForRefresh,
+        refresh_token: &ClaimsFromAccess,
     ) -> anyhow::Result<(String, String)> {
         let inner = self.inner.read().await;
         inner.refresh_access_token(access_token, refresh_token)
