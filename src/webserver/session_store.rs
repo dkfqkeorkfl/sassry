@@ -1,11 +1,12 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 use tower_sessions::{session::{Id, Record}, SessionStore, session_store::Error as SeesionError};
-use cassry::{serde_json, twdb::TimeWindowDB};
+use cassry::{serde_json, twdb::TimeWindowDB, LocalDB};
 
 /// TWDB를 사용하는 세션 저장소 구현
 #[derive(Clone)]
 pub struct FastSessionStore {
-    local_cache: TimeWindowDB,
+    local_cache: Arc<TimeWindowDB>,
+    redis: LocalDB,
 }
 
 impl fmt::Debug for FastSessionStore {
@@ -15,15 +16,16 @@ impl fmt::Debug for FastSessionStore {
 }
 
 impl FastSessionStore {
-    pub fn new(local_cache: TimeWindowDB) -> Self {
+    pub fn new(local_cache: Arc<TimeWindowDB>, local_db: LocalDB) -> Self {
         Self {
-            local_cache: local_cache
+            local_cache: local_cache,
+            redis: local_db,
         }
     }
 
-    // fn redis_key(session_id: &Id) -> String {
-    //     format!("session:{}", session_id.to_string())
-    // }
+    fn redis_key(session_id: &Id) -> String {
+        format!("session:{}", session_id.to_string())
+    }
 }
 
 #[async_trait::async_trait]
@@ -34,15 +36,18 @@ impl SessionStore for FastSessionStore {
             .map_err(|e| SeesionError::Encode(e.to_string()))?;
         
         {
-            self.local_cache.put(record.id.to_string(), session_json)
+            self.local_cache.put(record.id.to_string(), session_json.clone())
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
         }
 
-        // TODO: Redis에도 저장
-        // 1. Redis 클라이언트 생성
-        // 2. 세션 데이터 저장 (SETEX 사용)
-        // 3. TTL은 record.expiry()를 사용
+        // LocalDB에 저장
+        {
+            let key = Self::redis_key(&record.id);
+            self.redis.put(key, session_json)
+                .await
+                .map_err(|e| SeesionError::Backend(e.to_string()))?;
+        }
 
         Ok(())
     }
@@ -53,15 +58,18 @@ impl SessionStore for FastSessionStore {
             .map_err(|e| SeesionError::Encode(e.to_string()))?;
         
         {
-            self.local_cache.put(record.id.to_string(), session_json)
+            self.local_cache.put(record.id.to_string(), session_json.clone())
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
         }
 
-        // TODO: Redis에도 저장
-        // 1. Redis 클라이언트 생성
-        // 2. 세션 데이터 업데이트 (SETEX 사용)
-        // 3. TTL은 record.expiry()를 사용
+        // LocalDB에 저장 (업데이트)
+        {
+            let key = Self::redis_key(&record.id);
+            self.redis.put(key, session_json)
+                .await
+                .map_err(|e| SeesionError::Backend(e.to_string()))?;
+        }
 
         Ok(())
     }
@@ -79,12 +87,22 @@ impl SessionStore for FastSessionStore {
             }
         }
 
-        // TODO: Redis에서 조회
-        // 1. Redis 클라이언트 생성
-        // 2. 세션 데이터 조회 (GET 사용)
-        // 3. 조회된 데이터가 있으면:
-        //    - 로컬 캐시에도 저장 (TTL은 record.expiry() 사용)
-        //    - Record로 변환하여 반환
+        // 2. LocalDB에서 조회
+        {
+            let key = Self::redis_key(session_id);
+            if let Some(session_json) = self.redis.get(key)
+                .await
+                .map_err(|e| SeesionError::Decode(e.to_string()))?
+            {
+                // LocalDB에서 찾았다면 로컬 캐시에도 저장
+                if let Ok(record) = serde_json::from_str(&session_json) {
+                    self.local_cache.put(session_id.to_string(), session_json)
+                        .await
+                        .map_err(|e| SeesionError::Backend(e.to_string()))?;
+                    return Ok(Some(record));
+                }
+            }
+        }
 
         Ok(None)
     }
@@ -97,9 +115,13 @@ impl SessionStore for FastSessionStore {
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
         }
 
-        // TODO: Redis에서도 삭제
-        // 1. Redis 클라이언트 생성
-        // 2. 세션 데이터 삭제 (DEL 사용)
+        // LocalDB에서 삭제
+        {
+            let key = Self::redis_key(session_id);
+            self.redis.delete(key)
+                .await
+                .map_err(|e| SeesionError::Backend(e.to_string()))?;
+        }
 
         Ok(())
     }

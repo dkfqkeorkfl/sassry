@@ -8,6 +8,7 @@ use axum::{extract::FromRequestParts, RequestPartsExt};
 // TODO: 비밀키 환경변수 관리, 에러 핸들링, 클레임 확장, 알고리즘 선택 등 구현 필요
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum_extra::{
@@ -20,7 +21,6 @@ use cassry::{
 };
 
 use super::errors::RespError;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// 토큰 타입 구분 (access/refresh 등)
@@ -42,35 +42,19 @@ impl Default for TokenType {
     }
 }
 
-/// 환경 구분 (dev, prod, test 등)
-// #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-// pub enum Environment {
-//     #[serde(rename = "dev")]
-//     Development,
-//     #[serde(rename = "prod")]
-//     Production,
-//     #[serde(rename = "test")]
-//     Test,
-// }
-
-// impl Default for Environment {
-//     fn default() -> Self {
-//         Environment::Development
-//     }
-// }
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClaimsCore<T> {
-    pub jti: u64, // 토큰 고유 ID
-    pub from: u64,
+    pub jti: String, // 토큰 고유 ID
+    pub from: String,
 
     pub exp: usize,            // 만료 시간 (timestamp)
     pub iat: usize,            // 발급 시간 (timestamp)
     pub token_type: TokenType, // access/refresh 등
 
+    pub sub: u64,              // 사용자 ID
+    pub role: u64,             // 권한(플래그)
+
     // refresh 토큰은 아래 정보를 세션에 담아야 한다.
-    // pub role: u64,             // 권한(플래그)
-    // pub sub: String,              // 사용자 ID
     // pub aud: u64,              // 대상자 (클라이언트 ID 등)
     // pub nbf: usize,            // 시작 시간 (timestamp)
     // pub env: Environment,      // 실행환경
@@ -90,6 +74,8 @@ impl From<Claims> for ClaimsWithoutValidation {
             exp: claims.exp,
             iat: claims.iat,
             token_type: claims.token_type,
+            sub: claims.sub,
+            role: claims.role,
             extra: std::marker::PhantomData::default(),
         }
     }
@@ -103,11 +89,13 @@ impl Default for Claims {
             .as_secs() as usize;
 
         Self {
-            jti: 0,
-            from: 0,
+            jti: Uuid::new_v4().to_string(),
+            from: Default::default(),
             iat: now,
             exp: now,
             token_type: TokenType::default(),
+            sub: Default::default(),
+            role: Default::default(),
             extra: std::marker::PhantomData::default(),
         }
     }
@@ -233,7 +221,7 @@ impl Inner {
 
         let mut access_claims = refresh_claims.clone();
         access_claims.token_type = TokenType::Access;
-        access_claims.from = refresh_claims.jti;
+        access_claims.from = refresh_claims.jti.clone();
 
         let access_token = self.generate_jwt(&access_claims)?;
         let refresh_token = self.generate_jwt(&refresh_claims)?;
@@ -264,7 +252,7 @@ impl Inner {
         refresh_claims.token_type = TokenType::Refresh;
         let mut access_claims = refresh_claims.clone();
         access_claims.token_type = TokenType::Access;
-        access_claims.from = refresh_claims.jti;
+        access_claims.from = refresh_claims.jti.clone();
 
         let new_access_token = self.generate_jwt(&access_claims)?;
         let new_refresh_token = self.generate_jwt(&refresh_claims)?;
@@ -274,15 +262,14 @@ impl Inner {
     }
 }
 
-#[derive(Clone)]
 pub struct JwtIssuer {
-    inner: RwArc<Inner>,
+    inner: RwLock<Inner>,
 }
 
 impl JwtIssuer {
     pub fn new(secret: SecretString, issuer: u64, env: String) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Inner::new(issuer, env, secret))),
+            inner: Inner::new(issuer, env, secret).into(),
         }
     }
 

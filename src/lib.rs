@@ -16,3 +16,4 @@ pub use meval;
 pub use rand;
 pub use oauth2;
 pub use moka;
+pub use uuid;

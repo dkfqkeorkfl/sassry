@@ -32,10 +32,12 @@ tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.8", features = ["codec"] }
 
 # webserver
-axum = { version = "0.8.4", features = ["form", "json", "tokio", "ws"] }
+axum = { version = "0.8.4", features = ["form", "json", "tokio", "ws", "macros"] }
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
 tower = { version = "0.5.2", features = ["full"] }
+
+# 타워 세션은 사실 main에만 있어도 됨, errors 에서 사용하지만 claims에서 사용하므로 여기에 있음
 tower-sessions = "0.14.0"
 oauth2 = "5.0.0"
 
@@ -48,6 +50,7 @@ bitflags = "2.9.1"
 rand = { version = "0.9.1", features = ["std"] }
 url = "2.5.4"
 thiserror = "2.0.10"
+uuid = "1.17.0"
 
 ta = "0.5.0"
 meval = "0.2"

@@ -181,9 +181,8 @@ impl Inner {
     }
 }
 
-#[derive(Clone)]
 pub struct GoogleOAuth {
-    inner: Arc<RwLock<Inner>>,
+    inner: RwLock<Inner>,
 }
 
 impl GoogleOAuth {
@@ -194,7 +193,7 @@ impl GoogleOAuth {
     pub fn new() -> anyhow::Result<Self> {
         let inner = Inner::new()?;
         Ok(Self {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: inner.into(),
         })
     }
 
