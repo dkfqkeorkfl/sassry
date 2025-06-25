@@ -1,13 +1,22 @@
-use axum::{extract::FromRequestParts, http::StatusCode, response::{IntoResponse, Response}};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
-use thiserror::Error;
+use axum::{
+    extract::FromRequestParts,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use cassry::{
+    chrono::Utc,
     secrecy::{ExposeSecret, SecretString},
     *,
 };
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use thiserror::Error;
+use uuid::Uuid;
 
 use tokio::sync::RwLock;
 
@@ -72,12 +81,12 @@ pub struct ClaimsCore<T> {
     pub jti: String, // 토큰 고유 ID
     pub from: String,
 
-    pub exp: usize,            // 만료 시간 (timestamp)
-    pub iat: usize,            // 발급 시간 (timestamp)
+    pub exp: i64,              // 만료 시간 (timestamp)
+    pub iat: i64,              // 발급 시간 (timestamp)
     pub token_type: TokenType, // access/refresh 등
 
-    pub sub: u64,              // 사용자 ID
-    pub role: u64,             // 권한(플래그)
+    pub sub: u64,  // 사용자 ID
+    pub role: u64, // 권한(플래그)
 
     // refresh 토큰은 아래 정보를 세션에 담아야 한다.
     // pub aud: u64,              // 대상자 (클라이언트 ID 등)
@@ -89,9 +98,10 @@ pub struct ClaimsCore<T> {
 }
 
 pub type ClaimsFromAccess = ClaimsCore<()>;
-pub type ClaimsForRefresh = ClaimsCore<u64>;
+pub type ClaimsForExchange = ClaimsCore<u64>;
+pub type ClaimsRefresh = ClaimsCore<i64>;
 
-impl From<ClaimsFromAccess> for ClaimsForRefresh {
+impl From<ClaimsFromAccess> for ClaimsForExchange {
     fn from(claims: ClaimsFromAccess) -> Self {
         Self {
             jti: claims.jti,
@@ -108,10 +118,7 @@ impl From<ClaimsFromAccess> for ClaimsForRefresh {
 
 impl Default for ClaimsFromAccess {
     fn default() -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as usize;
+        let now = Utc::now().timestamp();
 
         Self {
             jti: Uuid::new_v4().to_string(),
@@ -170,7 +177,7 @@ where
     }
 }
 
-impl<S> FromRequestParts<S> for ClaimsForRefresh
+impl<S> FromRequestParts<S> for ClaimsForExchange
 where
     S: Send + Sync,
 {
@@ -219,17 +226,24 @@ where
 
 pub struct Inner {
     secret: SecretString,
-    issuer: u64,
-    env: String,
+    name: String,
+    access_ttl: chrono::Duration,
+    refresh_ttl: chrono::Duration,
 }
 
 impl Inner {
     /// 새로운 JwtManager 인스턴스 생성
-    pub fn new(issuer: u64, env: String, secret: SecretString) -> Self {
+    pub fn new(
+        name: String,
+        secret: SecretString,
+        access_ttl: chrono::Duration,
+        refresh_ttl: chrono::Duration,
+    ) -> Self {
         Self {
             secret,
-            issuer,
-            env,
+            name,
+            access_ttl,
+            refresh_ttl,
         }
     }
 
@@ -270,18 +284,37 @@ impl Inner {
     }
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
-    pub fn login(&self) -> anyhow::Result<(String, String)> {
-        let mut refresh_claims = ClaimsFromAccess::default();
-        refresh_claims.token_type = TokenType::Refresh;
+    pub fn login(
+        &self,
+        uid: u64,
+        role: u64,
+        user_agent: String,
+    ) -> anyhow::Result<(String, ClaimsRefresh)> {
+        let now = Utc::now();
+        let refresh_claims = ClaimsRefresh {
+            jti: Uuid::new_v4().to_string(),
+            from: user_agent,
+            iat: now.timestamp(),
+            exp: (now + self.refresh_ttl).timestamp(),
+            token_type: TokenType::Refresh,
+            sub: uid,
+            role: role,
+            extra: Default::default(),
+        };
 
-        let mut access_claims = refresh_claims.clone();
-        access_claims.token_type = TokenType::Access;
-        access_claims.from = refresh_claims.jti.clone();
+        let access_claims = ClaimsFromAccess {
+            jti: Uuid::new_v4().to_string(),
+            from: refresh_claims.jti.clone(),
+            iat: now.timestamp(),
+            exp: (now + self.access_ttl).timestamp(),
+            token_type: TokenType::Access,
+            sub: uid,
+            role: role,
+            extra: Default::default(),
+        };
 
         let access_token = self.generate_jwt(&access_claims)?;
-        let refresh_token = self.generate_jwt(&refresh_claims)?;
-
-        Ok((access_token, refresh_token))
+        Ok((access_token, refresh_claims))
     }
 
     /// Refresh Token 검증 및 Access Token 재발급
@@ -291,29 +324,19 @@ impl Inner {
     /// 실제 서비스에서는 refresh_token 재사용 방지, 블랙리스트, 만료, 사용자 상태 등 섬세한 보안 정책 필요
     pub fn refresh_access_token(
         &self,
-        access_token: &ClaimsForRefresh,
-        refresh_token: &ClaimsFromAccess,
-    ) -> anyhow::Result<(String, String)> {
-        // 1. JWT 구조 및 서명, 만료 등 1차 검증
-        //let claims = self.jwt_manager.read().await.verify_jwt(refresh_token, None).await?;
-        // 2. 토큰 타입이 refresh인지 확인
-        // if claims.token_type != TokenType::Refresh {
-        //     return Err(anyhowln!("Invalid token type"));
-        // }
-        // 3. (선택) DB/Redis 등에서 refresh_token 추가 검증 (블랙리스트, 만료, 사용자 상태 등)
-        // TODO: self.token_manager.verify_refresh_token(&claims.sub.to_string(), refresh_token) 등 추가
-        // 4. 검증 통과 시 새로운 access_token 발급
-        let mut refresh_claims = ClaimsFromAccess::default();
-        refresh_claims.token_type = TokenType::Refresh;
-        let mut access_claims = refresh_claims.clone();
-        access_claims.token_type = TokenType::Access;
-        access_claims.from = refresh_claims.jti.clone();
+        access_token: &ClaimsForExchange,
+        refresh_token: &ClaimsRefresh,
+        user_agent: String,
+    ) -> anyhow::Result<(String, ClaimsRefresh)> {
+        if access_token.exp < chrono::Utc::now().timestamp()
+            || access_token.sub != refresh_token.sub
+            || access_token.from != refresh_token.jti
+            || refresh_token.from != user_agent.to_string()
+        {
+            return Err(anyhowln!("Invalid token type"));
+        }
 
-        let new_access_token = self.generate_jwt(&access_claims)?;
-        let new_refresh_token = self.generate_jwt(&refresh_claims)?;
-        // (선택) refresh_token 재사용 방지 정책이 있다면, 새 refresh_token도 발급 및 저장
-        // self.token_manager.store_tokens(&claims.sub.to_string(), &new_access_token, refresh_token);
-        Ok((new_access_token, new_refresh_token))
+        self.login(access_token.sub, access_token.role, user_agent)
     }
 }
 
@@ -322,9 +345,14 @@ pub struct JwtIssuer {
 }
 
 impl JwtIssuer {
-    pub fn new(secret: SecretString, issuer: u64, env: String) -> Self {
+    pub fn new(
+        name: String,
+        secret: SecretString,
+        access_ttl: chrono::Duration,
+        refresh_ttl: chrono::Duration,
+    ) -> Self {
         Self {
-            inner: Inner::new(issuer, env, secret).into(),
+            inner: Inner::new(name, secret, access_ttl, refresh_ttl).into(),
         }
     }
 
@@ -352,17 +380,23 @@ impl JwtIssuer {
         inner.verify_jwt(token, validation)
     }
 
-    pub async fn login(&self) -> anyhow::Result<(String, String)> {
+    pub async fn login(
+        &self,
+        uid: u64,
+        role: u64,
+        user_agent: String,
+    ) -> anyhow::Result<(String, ClaimsRefresh)> {
         let inner = self.inner.read().await;
-        inner.login()
+        inner.login(uid, role, user_agent)
     }
 
     pub async fn refresh_access_token(
         &self,
-        access_token: &ClaimsForRefresh,
-        refresh_token: &ClaimsFromAccess,
-    ) -> anyhow::Result<(String, String)> {
+        access_token: &ClaimsForExchange,
+        refresh_token: &ClaimsRefresh,
+        user_agent: String,
+    ) -> anyhow::Result<(String, ClaimsRefresh)> {
         let inner = self.inner.read().await;
-        inner.refresh_access_token(access_token, refresh_token)
+        inner.refresh_access_token(access_token, refresh_token, user_agent)
     }
 }
