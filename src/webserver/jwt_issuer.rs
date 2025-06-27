@@ -11,9 +11,7 @@ use cassry::{
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use std::{
-    net::SocketAddr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -247,7 +245,7 @@ impl Inner {
         uid: u64,
         role: u64,
         user_agent: String,
-    ) -> anyhow::Result<(String, ClaimsRefresh)> {
+    ) -> anyhow::Result<(ClaimsFromAccess, ClaimsRefresh)> {
         let now = Utc::now();
         let timestamp = now.timestamp();
         let refresh_claims = ClaimsRefresh {
@@ -274,15 +272,14 @@ impl Inner {
             extra: Default::default(),
         };
 
-        let access_token = self.generate_jwt(&access_claims)?;
-        Ok((access_token, refresh_claims))
+        Ok((access_claims, refresh_claims))
     }
 
     pub fn refresh_access_token(
         &self,
         refresh_token: &ClaimsRefresh,
         user_agent: String,
-    ) -> anyhow::Result<(String, ClaimsRefresh)> {
+    ) -> anyhow::Result<(ClaimsFromAccess, ClaimsRefresh)> {
         if refresh_token.from != user_agent {
             return Err(anyhowln!("Invalid token type"));
         }
@@ -313,8 +310,7 @@ impl Inner {
             extra: Default::default(),
         };
 
-        let access_token = self.generate_jwt(&access_claims)?;
-        Ok((access_token, refresh_claims))
+        Ok((access_claims, refresh_claims))
     }
 }
 
@@ -363,7 +359,7 @@ impl JwtIssuer {
         uid: u64,
         role: u64,
         user_agent: String,
-    ) -> anyhow::Result<(String, ClaimsRefresh)> {
+    ) -> anyhow::Result<(ClaimsFromAccess, ClaimsRefresh)> {
         let inner = self.inner.read().await;
         inner.login(uid, role, user_agent)
     }
@@ -372,7 +368,7 @@ impl JwtIssuer {
         &self,
         refresh_token: &ClaimsRefresh,
         user_agent: String,
-    ) -> anyhow::Result<(String, ClaimsRefresh)> {
+    ) -> anyhow::Result<(ClaimsFromAccess, ClaimsRefresh)> {
         let inner = self.inner.read().await;
         inner.refresh_access_token(refresh_token, user_agent)
     }
