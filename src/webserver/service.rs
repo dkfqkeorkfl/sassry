@@ -25,14 +25,15 @@ pub struct Config {
 
     pub apikey_sheet: String,
     pub apikey_tab: String,
-    pub account_sheet: String,
-    pub account_tab: String,
 
     pub server_eject: f64,
     pub server_ping: f64,
 
     pub cache_name: String,
-    pub salt: String,
+
+    pub access_ttl: i64,
+    pub refresh_ttl: i64,
+    pub session_ttl: i64,
 }
 
 impl Config {
