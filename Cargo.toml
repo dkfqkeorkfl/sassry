@@ -44,7 +44,6 @@ oauth2 = "5.0.0"
 
 # others
 # dashmap = "6.1.0"
-moka = { version = "0.12.10", features = ["future"] }
 
 base64 = "0.22.0"
 bitflags = "2.9.1"
