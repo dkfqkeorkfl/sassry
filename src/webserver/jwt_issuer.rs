@@ -53,11 +53,14 @@ pub enum ClaimsError {
 impl IntoResponse for ClaimsError {
     fn into_response(self) -> Response {
         match &self {
-            ClaimsError::MissingCookieHeader
-            | ClaimsError::MissingJwtToken
-            | ClaimsError::InvalidJwt(_) => {
+            ClaimsError::MissingCookieHeader | ClaimsError::MissingJwtToken => {
                 debug!("Claims error: {}", self);
                 (StatusCode::UNAUTHORIZED, self.to_string()).into_response()
+            }
+
+            ClaimsError::InvalidJwt(err) => {
+                debug!("{} : {}", self, err);
+                (StatusCode::UNAUTHORIZED, err.to_string()).into_response()
             }
 
             ClaimsError::Internal(err) => {
