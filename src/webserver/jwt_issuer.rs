@@ -10,9 +10,7 @@ use cassry::{
 };
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use std::{
-    sync::Arc,
-};
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -58,7 +56,7 @@ impl IntoResponse for ClaimsError {
             ClaimsError::MissingCookieHeader
             | ClaimsError::MissingJwtToken
             | ClaimsError::InvalidJwt(_) => {
-                warn!("Claims error: {}", self);
+                debug!("Claims error: {}", self);
                 (StatusCode::UNAUTHORIZED, self.to_string()).into_response()
             }
 
@@ -138,33 +136,22 @@ where
         _state: &S,
     ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
         async move {
-            // 쿠키에서 JWT 토큰 추출
             let cookies = parts
-                .headers
-                .get("cookie")
-                .and_then(|cookie_header| cookie_header.to_str().ok())
+                .extensions
+                .get::<tower_cookies::Cookies>()
                 .ok_or(ClaimsError::MissingCookieHeader)?;
-
-            // 쿠키 문자열에서 JWT 토큰 찾기
-            let jwt_token = cookies
-                .split(';')
-                .find_map(|cookie| {
-                    let cookie = cookie.trim();
-                    if cookie.starts_with("access=") {
-                        Some(cookie[4..].to_string())
-                    } else {
-                        None
-                    }
-                })
-                .ok_or(ClaimsError::MissingJwtToken)?;
-
+            let cookie = cookies
+                .get(JwtIssuer::get_cookie_name())
+                .ok_or(ClaimsError::MissingCookieHeader)?;
             let jwt_manager = parts
                 .extensions
                 .get::<Arc<JwtIssuer>>()
                 .ok_or_else(|| ClaimsError::Internal(anyhow::anyhow!("JwtManager not found")))?;
 
+            let cookie_value = cookie.value();
+            println!("cookie_value: {}", cookie_value);
             jwt_manager
-                .verify_jwt(&jwt_token, None)
+                .verify_jwt(&cookie_value, None)
                 .await
                 .map_err(|e| ClaimsError::InvalidJwt(e.to_string()))
         }
@@ -319,6 +306,10 @@ pub struct JwtIssuer {
 }
 
 impl JwtIssuer {
+    pub fn get_cookie_name() -> &'static str {
+        "access"
+    }
+
     pub fn new(
         name: String,
         secret: SecretString,
