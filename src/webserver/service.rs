@@ -25,6 +25,8 @@ pub struct Config {
 
     pub apikey_sheet: String,
     pub apikey_tab: String,
+    pub forbidden_sheet: String,
+    pub forbidden_tab: String,
 
     pub server_eject: f64,
     pub server_ping: f64,
