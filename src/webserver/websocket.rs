@@ -119,7 +119,7 @@ impl Into<TungsteniteMessage> for Message {
 pub enum Signal {
     Opened,
     Closed,
-    Recived(Message),
+    Received(Message),
     Error(anyhow::Error),
 }
 
@@ -228,13 +228,12 @@ impl ConnectionReal {
         param: Arc<WebsocketParam>,
         stream: S,
         f: impl Fn(ConnectionRwArc, Signal) -> BoxFuture<'static, ()> + Send + Sync + 'static,
-        orig_to_msg: impl Fn(M) -> Message + Send + Sync + Copy + 'static,
-        msg_to_orig: impl Fn(Message) -> M + Send + Sync + 'static,
     ) -> anyhow::Result<Arc<RwLock<Self>>>
     where
         S: futures::Stream<Item = Result<M, E>> + Sink<M, Error = E> + Unpin + Send + 'static,
         M: Send + 'static,
         E: std::error::Error + Send + Sync + 'static,
+        Message: From<M> + Into<M>,
     {
         let callback = Arc::new(f);
         let (mut write_half, mut read_half) = stream.split();
@@ -298,7 +297,7 @@ impl ConnectionReal {
             {
                 if *cloned_is_connected.read().await == false {
                     break;
-                } else if let Err(e) = write_half.send(msg_to_orig(message)).await {
+                } else if let Err(e) = write_half.send(message.into()).await {
                     if let Some(spt) = wpt_ws.upgrade() {
                         cloned_callback(spt, Signal::Error(e.into())).await;
                     }
@@ -313,7 +312,7 @@ impl ConnectionReal {
             }
 
             while let Some((message, spt)) = read_half.next().await.zip(wpt_ws.upgrade()) {
-                let signal = match message.map(orig_to_msg) {
+                let signal = match message.map(Message::from) {
                     std::result::Result::Ok(msg) => {
                         if let Message::Pong(payload) = msg {
                             let result = serde_json::from_slice::<serde_json::Value>(&payload[..])
@@ -328,13 +327,13 @@ impl ConnectionReal {
                             match result {
                                 anyhow::Result::Ok(mili) => {
                                     spt.write().await.update_pong(mili);
-                                    Signal::Recived(Message::Pong(payload))
+                                    Signal::Received(Message::Pong(payload))
                                 }
                                 Err(e) => Signal::Error(e),
                             }
                         } else {
                             cassry::trace!("recved : {:?}", msg);
-                            Signal::Recived(msg)
+                            Signal::Received(msg)
                         }
                     }
                     Err(e) => Signal::Error(e.into()),
@@ -361,8 +360,6 @@ impl ConnectionReal {
             param,
             stream,
             f,
-            |msg: AxumMessage| -> Message { msg.into() },
-            |msg: Message| -> AxumMessage { msg.into() },
         )
     }
 
@@ -378,8 +375,6 @@ impl ConnectionReal {
             param,
             stream,
             f,
-            |msg: TungsteniteMessage| -> Message { msg.into() },
-            |msg: Message| -> TungsteniteMessage { msg.into() },
         )
     }
 }
@@ -410,6 +405,7 @@ impl ConnectionItf for ConnectionNull {
 pub struct Websocket {
     conn: Option<(Arc<WebsocketParam>, ConnectionRwArc)>,
     created: DateTime<Utc>,
+    uuid : String,
 }
 pub type ReciveCallback =
     Arc<dyn Fn(Websocket, Signal) -> BoxFuture<'static, ()> + Send + Sync + 'static>;
@@ -433,6 +429,7 @@ impl Websocket {
         Self {
             conn: Some((param, conn)),
             created: created,
+            uuid: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -558,11 +555,7 @@ impl Websocket {
         self.created.clone()
     }
 
-    pub fn get_id(&self) -> i64 {
-        if self.conn.is_some() {
-            self.created.timestamp_millis()
-        } else {
-            0
-        }
+    pub fn get_uuid(&self) -> &str {
+        &self.uuid
     }
 }

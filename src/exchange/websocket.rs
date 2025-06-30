@@ -85,7 +85,7 @@ type WebsocketInfoRwArc = RwArc<WebsocketInfo>;
 struct Shared {
     pub context: ExchangeContextPtr,
     pub websockets: RwLock<HashMap<String, WebsocketInfoRwArc>>,
-    pub websockets_by_id: RwLock<HashMap<i64, WebsocketInfoRwArc>>,
+    pub websockets_by_id: RwLock<HashMap<String, WebsocketInfoRwArc>>,
     pub interface: Arc<dyn ExchangeSocketTrait>,
     pub connected_cnt: Arc<RwLock<usize>>,
     pub callback_helper: SubscribeCallbackHelper,
@@ -110,7 +110,7 @@ impl Shared {
                 cassry::info!(
                     "opened websocket(total:{}, id:{}) : {}",
                     self.connected_cnt.read().await,
-                    websocket.get_id(),
+                    websocket.get_uuid(),
                     websocket.get_param().unwrap_or_default().url
                 );
             }
@@ -119,7 +119,7 @@ impl Shared {
                 cassry::info!(
                     "closed websocket(total:{}: id:{}) : {}",
                     self.connected_cnt.read().await,
-                    websocket.get_id(),
+                    websocket.get_uuid(),
                     websocket.get_param().unwrap_or_default().url
                 );
             }
@@ -138,7 +138,7 @@ impl Shared {
                     websocket.get_param().unwrap_or_default().url
                 );
 
-                let id = websocket.get_id();
+                let id = websocket.get_uuid();
                 if let Some(info) = self.find_websocket_by_id(&id).await {
                     let mut locked = info.write().await;
                     if *success {
@@ -184,8 +184,8 @@ impl Shared {
     {
         Arc::new(Shared {
             context: context,
-            websockets: HashMap::<String, WebsocketInfoRwArc>::default().into(),
-            websockets_by_id: HashMap::<i64, WebsocketInfoRwArc>::default().into(),
+            websockets: Default::default(),
+            websockets_by_id: Default::default(),
             interface: Arc::new(interface),
             connected_cnt: Arc::new(RwLock::new(0)),
             callback_helper: callback,
@@ -197,7 +197,7 @@ impl Shared {
         group: String,
         info: WebsocketInfo,
     ) -> Option<WebsocketInfoRwArc> {
-        let id = info.websocket.get_id();
+        let id = info.websocket.get_uuid().to_string();
         let ptr = Arc::new(RwLock::new(info));
         self.websockets_by_id.write().await.insert(id, ptr.clone());
         self.websockets.write().await.insert(group, ptr)
@@ -219,7 +219,7 @@ impl Shared {
         self.websockets.read().await.get(group).cloned()
     }
 
-    pub async fn find_websocket_by_id(&self, id: &i64) -> Option<WebsocketInfoRwArc> {
+    pub async fn find_websocket_by_id(&self, id: &str) -> Option<WebsocketInfoRwArc> {
         self.websockets_by_id.read().await.get(id).cloned()
     }
 

@@ -279,7 +279,7 @@ impl Inner {
             async move {
                 if let Some(context_ptr) = context_wpt.upgrade() {
                     match &signal {
-                        Signal::Recived(m) => {
+                        Signal::Received(m) => {
                             if let Message::Pong(_) = m {
                                 cassry::trace!(
                                     "signal({:?}) subsribe({})",

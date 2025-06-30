@@ -5,11 +5,12 @@ use axum::{
 };
 use cassry::{
     chrono::Utc,
+    ring::hmac,
     secrecy::{ExposeSecret, SecretString},
     *,
 };
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
@@ -195,13 +196,33 @@ impl Inner {
         self.secret.clone()
     }
 
+    pub fn compute_hash(&self, data: &str) -> anyhow::Result<String> {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret.expose_secret().as_bytes());
+        let tag = hmac::sign(&key, data.as_bytes());
+        Ok(hex::encode(tag.as_ref()))
+    }
+
     /// JWT 토큰 생성 (HS256) - 클레임 구조체를 직접 받아 생성
-    pub fn generate_jwt(&self, claims: &ClaimsFromAccess) -> anyhow::Result<String> {
+    pub fn generate_jwt<T: Serialize>(&self, claims: &T) -> anyhow::Result<String> {
         encode(
             &Header::default(),
             claims,
             &EncodingKey::from_secret(self.secret.expose_secret().as_bytes()),
         )
+        .map_err(anyhow::Error::from)
+    }
+
+    pub fn verify<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        validation: Option<Validation>,
+    ) -> anyhow::Result<T> {
+        decode::<T>(
+            token,
+            &DecodingKey::from_secret(self.secret.expose_secret().as_bytes()),
+            &validation.unwrap_or_default(),
+        )
+        .map(|token_data| token_data.claims)
         .map_err(anyhow::Error::from)
     }
 
@@ -211,22 +232,7 @@ impl Inner {
         token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<ClaimsFromAccess> {
-        decode::<ClaimsFromAccess>(
-            token,
-            &DecodingKey::from_secret(self.secret.expose_secret().as_bytes()),
-            &validation.unwrap_or_default(),
-        )
-        .map(|token_data| token_data.claims)
-        .map_err(anyhow::Error::from)
-        // .map_err(|er| {
-        //     er.kind().
-        //     match er.kind() {
-        //         jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-        //             anyhow::anyhow!("Token expired")
-        //         }
-        //         _ => anyhow::anyhow!("Invalid token"),
-        //     }
-        // })
+        self.verify::<ClaimsFromAccess>(token, validation)
     }
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
@@ -334,7 +340,7 @@ impl JwtIssuer {
         inner.get_secret()
     }
 
-    pub async fn generate_jwt(&self, claims: &ClaimsFromAccess) -> anyhow::Result<String> {
+    pub async fn generate_jwt<T: Serialize>(&self, claims: &T) -> anyhow::Result<String> {
         let inner = self.inner.read().await;
         inner.generate_jwt(claims)
     }
@@ -365,5 +371,20 @@ impl JwtIssuer {
     ) -> anyhow::Result<(ClaimsFromAccess, ClaimsRefresh)> {
         let inner = self.inner.read().await;
         inner.refresh_access_token(refresh_token, user_agent)
+    }
+
+    pub async fn compute_hash(&self, data: &str) -> anyhow::Result<String> {
+        let inner = self.inner.read().await;
+        inner.compute_hash(data)
+    }
+
+    pub async fn get_name(&self) -> String {
+        let inner = self.inner.read().await;
+        inner.name.clone()
+    }
+
+    pub async fn verify<T: DeserializeOwned>(&self, data: &str, validation: Option<Validation>) -> anyhow::Result<T> {
+        let inner = self.inner.read().await;
+        inner.verify::<T>(data, validation)
     }
 }

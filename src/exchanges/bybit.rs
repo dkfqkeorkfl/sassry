@@ -1187,7 +1187,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 }
             }
 
-            Signal::Recived(data) => match data {
+            Signal::Received(data) => match data {
                 Message::Text(text) => {
                     let json: serde_json::Value =
                         serde_json::from_str(text.as_str()).unwrap_or_default();
