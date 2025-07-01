@@ -7,7 +7,7 @@ use std::{
 use anyhow::Ok;
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::{future::BoxFuture, FutureExt};
+use futures::future::BoxFuture;
 use tokio::sync::RwLock;
 
 use super::super::webserver::websocket::*;
@@ -16,12 +16,14 @@ use cassry::*;
 
 #[derive(Clone)]
 pub struct SubscribeCallbackHelper {
-    pub callback: Arc<dyn Fn(Signal, SubscribeResult) -> BoxFuture<'static, ()> + Send + Sync + 'static>,
+    pub callback:
+        Arc<dyn Fn(Signal, SubscribeResult) -> BoxFuture<'static, ()> + Send + Sync + 'static>,
 }
 
 impl SubscribeCallbackHelper {
-    pub fn new(f: impl Fn(Signal, SubscribeResult) -> BoxFuture<'static, ()> + Send + Sync + 'static) -> Self
-    {
+    pub fn new(
+        f: impl Fn(Signal, SubscribeResult) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    ) -> Self {
         SubscribeCallbackHelper {
             callback: Arc::new(f),
         }
@@ -82,6 +84,26 @@ struct WebsocketInfo {
 }
 type WebsocketInfoRwArc = RwArc<WebsocketInfo>;
 
+impl WebsocketInfo {
+    pub fn new(websocket: Websocket) -> Self {
+        Self {
+            checkedtime: Utc::now(),
+            retryed: 0,
+            websocket: websocket,
+            subscribes: Default::default(),
+            is_authorized: false,
+        }
+    }
+    pub fn exchange_websocket(&mut self, websocket: Websocket) -> Websocket {
+        let previous = self.websocket.clone();
+        self.websocket = websocket;
+        self.checkedtime = Utc::now();
+        self.retryed = 0;
+        self.is_authorized = false;
+        previous
+    }
+}
+
 struct Shared {
     pub context: ExchangeContextPtr,
     pub websockets: RwLock<HashMap<String, WebsocketInfoRwArc>>,
@@ -94,7 +116,24 @@ struct Shared {
 struct Inner {
     shared: Arc<Shared>,
     subscribes: RwLock<HashSet<String>>,
-    callback_helper: ReciveCallbackHelper,
+}
+
+macro_rules! make_receive_callback {
+    ($ptr:expr) => {{
+        let wpt = std::sync::Arc::downgrade(&$ptr);
+        move |websocket, signal| {
+            let cloned_wpt = wpt.clone();
+            async move {
+                if let Some(spt) = cloned_wpt.upgrade() {
+                    let result = spt
+                        .on_msg(websocket, &signal)
+                        .await
+                        .unwrap_or_else(SubscribeResult::from);
+                    (spt.callback_helper.callback)(signal, result).await;
+                }
+            }
+        }
+    }};
 }
 
 impl Shared {
@@ -157,23 +196,6 @@ impl Shared {
         Ok(result)
     }
 
-    pub fn make_recive_callback(ptr: &Arc<Shared>) -> ReciveCallbackHelper {
-        let wpt = Arc::downgrade(ptr);
-        ReciveCallbackHelper::new(move |websocket, signal| {
-            let cloned_wpt = wpt.clone();
-            async move {
-                if let Some(spt) = cloned_wpt.upgrade() {
-                    let result = spt
-                        .on_msg(websocket, &signal)
-                        .await
-                        .unwrap_or_else(|e| SubscribeResult::Err(anyhow::Error::from(e)));
-                    (spt.callback_helper.callback)(signal, result).await;
-                }
-            }
-            .boxed()
-        })
-    }
-
     pub fn new<Interface>(
         context: ExchangeContextPtr,
         interface: Interface,
@@ -201,18 +223,6 @@ impl Shared {
         let ptr = Arc::new(RwLock::new(info));
         self.websockets_by_id.write().await.insert(id, ptr.clone());
         self.websockets.write().await.insert(group, ptr)
-    }
-
-    pub async fn change_websocket(&self, group: &str, websocket: Websocket) -> Option<Websocket> {
-        let info = self.websockets.read().await.get(group).cloned()?;
-        let mut locked = info.write().await;
-        let old = locked.websocket.clone();
-        locked.websocket = websocket;
-
-        locked.retryed = 0;
-        locked.is_authorized = false;
-        locked.checkedtime = Utc::now();
-        Some(old)
     }
 
     pub async fn find_websocket(&self, group: &str) -> Option<WebsocketInfoRwArc> {
@@ -269,27 +279,26 @@ impl Inner {
                 .interface
                 .make_websocket_param(&ctx.context, &group, &info.subscribes)
                 .await;
-            if let Err(e) = ws_param {
-                info.retryed += 1;
-                cassry::error!("occur an error for reconnecting : {}", e);
-                continue;
-            }
 
-            let mut websocket = Websocket::default();
-            let connect_result = websocket
-                .connect_with_callback_ptr(
-                    ws_param.unwrap(),
-                    Shared::make_recive_callback(&ctx).callback,
-                )
-                .await;
-            if let Err(e) = connect_result {
-                info.retryed += 1;
-                cassry::error!("occur an error for reconnecting : {}", e);
-                continue;
-            } else {
-                drop(info);
-                ctx.change_websocket(group.as_str(), websocket).await;
-            }
+            let ws_param = match ws_param {
+                std::result::Result::Ok(param) => param,
+                Err(e) => {
+                    info.retryed += 1;
+                    cassry::error!("occur an error for reconnecting : {}", e);
+                    continue;
+                }
+            };
+
+            match Websocket::connect(ws_param, make_receive_callback!(&ctx)).await {
+                std::result::Result::Ok(websocket) => {
+                    info.exchange_websocket(websocket);
+                }
+                Err(e) => {
+                    info.retryed += 1;
+                    cassry::error!("occur an error for reconnecting : {}", e);
+                    continue;
+                }
+            };
         }
 
         Ok(())
@@ -340,11 +349,9 @@ impl Inner {
             }
         });
 
-        let recive_callback = Shared::make_recive_callback(&shared);
         let exchange = Inner {
             shared,
             subscribes: HashSet::<String>::default().into(),
-            callback_helper: recive_callback,
         };
 
         Ok(Arc::new(RwLock::new(exchange)))
@@ -360,18 +367,9 @@ impl Inner {
             .interface
             .make_websocket_param(&self.get_exchange_context(), group, &subscribes)
             .await?;
-        let mut websocket = Websocket::default();
-        websocket
-            .connect_with_callback_ptr(client_param, self.callback_helper.callback.clone())
-            .await?;
-
-        let info = WebsocketInfo {
-            is_authorized: false,
-            checkedtime: Utc::now(),
-            retryed: 0,
-            websocket: websocket,
-            subscribes: HashMap::<SubscribeType, Vec<SubscribeParam>>::default(),
-        };
+        let websocket =
+            Websocket::connect(client_param, make_receive_callback!(&self.shared)).await?;
+        let info = WebsocketInfo::new(websocket);
         Ok(info)
     }
 
@@ -398,9 +396,7 @@ impl Inner {
             serde_json::to_string(&s).unwrap(),
             serde_json::to_string(&param.0).unwrap()
         );
-        let vec = vec![param];
-        let mut p = HashMap::new();
-        p.insert(s.clone(), vec);
+        let mut p = HashMap::from([(s.clone(), vec![param])]);
 
         let info = if let Some(websocket) = self.find_websocket(&group).await {
             websocket

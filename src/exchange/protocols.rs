@@ -1732,6 +1732,12 @@ pub enum SubscribeResult {
     Position(HashMap<MarketKind, PositionSet>),
 }
 
+impl From<anyhow::Error> for SubscribeResult {
+    fn from(err: anyhow::Error) -> Self {
+        SubscribeResult::Err(err)
+    }
+}
+
 #[derive(Debug)]
 pub struct ExchangeStorage {
     pub markets: RwArc<DataSet<Market, MarketKind>>,
