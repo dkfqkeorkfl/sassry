@@ -75,16 +75,16 @@ pub trait ExchangeSocketTrait: Send + Sync {
     }
 }
 
-struct WebsocketInfo {
+struct ConnectionInfo {
     pub checkedtime: chrono::DateTime<Utc>,
     pub retryed: u32,
     pub websocket: Websocket,
     pub subscribes: HashMap<SubscribeType, Vec<SubscribeParam>>,
     pub is_authorized: bool,
 }
-type WebsocketInfoRwArc = RwArc<WebsocketInfo>;
+type ConnectionInfoRwArc = RwArc<ConnectionInfo>;
 
-impl WebsocketInfo {
+impl ConnectionInfo {
     pub fn new(websocket: Websocket) -> Self {
         Self {
             checkedtime: Utc::now(),
@@ -106,8 +106,8 @@ impl WebsocketInfo {
 
 struct Shared {
     pub context: ExchangeContextPtr,
-    pub websockets: RwLock<HashMap<String, WebsocketInfoRwArc>>,
-    pub websockets_by_id: RwLock<HashMap<String, WebsocketInfoRwArc>>,
+    pub websockets: RwLock<HashMap<String, ConnectionInfoRwArc>>,
+    pub websockets_by_id: RwLock<HashMap<String, ConnectionInfoRwArc>>,
     pub interface: Arc<dyn ExchangeSocketTrait>,
     pub connected_cnt: Arc<RwLock<usize>>,
     pub callback_helper: SubscribeCallbackHelper,
@@ -217,19 +217,19 @@ impl Shared {
     pub async fn insert_websocket(
         &self,
         group: String,
-        info: WebsocketInfo,
-    ) -> Option<WebsocketInfoRwArc> {
+        info: ConnectionInfo,
+    ) -> Option<ConnectionInfoRwArc> {
         let id = info.websocket.get_uuid().to_string();
         let ptr = Arc::new(RwLock::new(info));
         self.websockets_by_id.write().await.insert(id, ptr.clone());
         self.websockets.write().await.insert(group, ptr)
     }
 
-    pub async fn find_websocket(&self, group: &str) -> Option<WebsocketInfoRwArc> {
+    pub async fn find_websocket(&self, group: &str) -> Option<ConnectionInfoRwArc> {
         self.websockets.read().await.get(group).cloned()
     }
 
-    pub async fn find_websocket_by_id(&self, id: &str) -> Option<WebsocketInfoRwArc> {
+    pub async fn find_websocket_by_id(&self, id: &str) -> Option<ConnectionInfoRwArc> {
         self.websockets_by_id.read().await.get(id).cloned()
     }
 
@@ -315,12 +315,12 @@ impl Inner {
     pub async fn insert_websocket(
         &self,
         group: String,
-        info: WebsocketInfo,
-    ) -> Option<WebsocketInfoRwArc> {
+        info: ConnectionInfo,
+    ) -> Option<ConnectionInfoRwArc> {
         self.shared.insert_websocket(group, info).await
     }
 
-    pub async fn find_websocket(&self, group: &str) -> Option<WebsocketInfoRwArc> {
+    pub async fn find_websocket(&self, group: &str) -> Option<ConnectionInfoRwArc> {
         self.shared.find_websocket(group).await
     }
 
@@ -361,7 +361,7 @@ impl Inner {
         &self,
         group: &String,
         subscribes: &HashMap<SubscribeType, Vec<SubscribeParam>>,
-    ) -> anyhow::Result<WebsocketInfo> {
+    ) -> anyhow::Result<ConnectionInfo> {
         let client_param = self
             .shared
             .interface
@@ -369,7 +369,7 @@ impl Inner {
             .await?;
         let websocket =
             Websocket::connect(client_param, make_receive_callback!(&self.shared)).await?;
-        let info = WebsocketInfo::new(websocket);
+        let info = ConnectionInfo::new(websocket);
         Ok(info)
     }
 
@@ -396,13 +396,13 @@ impl Inner {
             serde_json::to_string(&s).unwrap(),
             serde_json::to_string(&param.0).unwrap()
         );
-        let mut p = HashMap::from([(s.clone(), vec![param])]);
+        let mut params = HashMap::from([(s.clone(), vec![param])]);
 
         let info = if let Some(websocket) = self.find_websocket(&group).await {
             websocket
         } else {
             cassry::info!("Open websocket to subscribe : {}", &group);
-            let websocket = self.make_websocket(&group, &p).await?;
+            let websocket = self.make_websocket(&group, &params).await?;
             self.insert_websocket(group.clone(), websocket).await;
             let result = self
                 .find_websocket(&group)
@@ -416,17 +416,17 @@ impl Inner {
             if locked.is_authorized {
                 self.shared
                     .interface
-                    .subscribe(&self.get_exchange_context(), locked.websocket.clone(), &p)
+                    .subscribe(&self.get_exchange_context(), locked.websocket.clone(), &params)
                     .await?;
             }
 
             cassry::info!("success subscribe : {:?}", &s);
             if let Some(v) = locked.subscribes.get_mut(&s) {
-                if let Some(value) = p.values_mut().next() {
+                if let Some(value) = params.values_mut().next() {
                     v.extend(value.drain(..));
                 }
             } else {
-                locked.subscribes.extend(p);
+                locked.subscribes.extend(params);
             }
         }
 
