@@ -155,11 +155,12 @@ impl Default for WebsocketParam {
 
 #[async_trait]
 pub trait ConnectionItf: Send + Sync + 'static {
-    async fn send(&mut self, message: Message) -> anyhow::Result<()>;
-    async fn close(&mut self, param: Option<(u16, String)>) -> anyhow::Result<()>;
+    async fn send(&self, message: Message) -> anyhow::Result<()>;
+    async fn close(&self, param: Option<(u16, String)>) -> anyhow::Result<()>;
     async fn is_connected(&self) -> bool;
+    fn get_uuid(&self) -> &str;
+    fn get_created(&self) -> &DateTime<Utc>;
 }
-type ConnectionRwArc = Arc<RwLock<dyn ConnectionItf>>;
 
 //Behavior
 struct ConnectionReal {
@@ -167,13 +168,15 @@ struct ConnectionReal {
     sender: UnboundedSender<Message>,
     is_connect: RwArc<bool>,
 
-    sendping: chrono::DateTime<Utc>,
-    recvping: chrono::DateTime<Utc>,
+    uuid: String,
+    created: DateTime<Utc>,
+    sendping: RwLock<chrono::DateTime<Utc>>,
+    recvping: RwLock<chrono::DateTime<Utc>>,
 }
 
 #[async_trait]
 impl ConnectionItf for ConnectionReal {
-    async fn send(&mut self, message: Message) -> anyhow::Result<()> {
+    async fn send(&self, message: Message) -> anyhow::Result<()> {
         match &message {
             Message::Ping(_) => {}
             _ => {
@@ -189,35 +192,46 @@ impl ConnectionItf for ConnectionReal {
         Ok(())
     }
 
-    async fn close(&mut self, param: Option<(u16, String)>) -> anyhow::Result<()> {
+    async fn close(&self, param: Option<(u16, String)>) -> anyhow::Result<()> {
         self.send(Message::Close(param)).await
     }
 
     async fn is_connected(&self) -> bool {
         self.is_connect.read().await.clone()
     }
+
+    fn get_uuid(&self) -> &str {
+        &self.uuid
+    }
+
+    fn get_created(&self) -> &DateTime<Utc> {
+        &self.created
+    }
 }
 
 impl ConnectionReal {
-    pub fn latency(&self) -> chrono::Duration {
-        if self.sendping > self.recvping {
-            Utc::now() - self.sendping
+    pub async fn latency(&self) -> chrono::Duration {
+        let send = *self.sendping.read().await;
+        let recv = *self.recvping.read().await;
+        if send > recv {
+            Utc::now() - send
         } else {
-            self.recvping - self.sendping
+            recv - send
         }
     }
 
-    pub async fn ping(&mut self) -> anyhow::Result<()> {
+    pub async fn ping(&self) -> anyhow::Result<()> {
         let now = Utc::now();
         let ping = json!(now.timestamp_millis());
         let payload = serde_json::to_vec(&ping)?;
-        self.sendping = now;
+        *self.sendping.write().await = now;
         self.send(Message::Ping(payload)).await
     }
 
-    pub fn update_pong(&mut self, mili: i64) -> bool {
-        if mili == self.sendping.timestamp_millis() {
-            self.recvping = Utc::now();
+    pub async fn update_pong(&self, mili: i64) -> bool {
+        let send = *self.sendping.read().await;
+        if mili == send.timestamp_millis() {
+            *self.recvping.write().await = Utc::now();
             true
         } else {
             false
@@ -228,14 +242,14 @@ impl ConnectionReal {
         param: Arc<WebsocketParam>,
         stream: S,
         f: F,
-    ) -> anyhow::Result<Arc<RwLock<Self>>>
+    ) -> anyhow::Result<Arc<Self>>
     where
         S: futures::Stream<Item = Result<M, E>> + Sink<M, Error = E> + Unpin + Send + 'static,
         M: Send + 'static,
         E: std::error::Error + Send + Sync + 'static,
         Message: From<M> + Into<M>,
 
-        F: Fn(ConnectionRwArc, Signal) -> Fut + Send + Sync + 'static + Clone,
+        F: Fn(Arc<dyn ConnectionItf>, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let callback = Arc::new(f);
@@ -245,14 +259,17 @@ impl ConnectionReal {
         let now = Utc::now();
         let ping_interval = param.ping_interval.to_std()?;
         let is_connected = Arc::new(RwLock::new(true));
-        let ws = Arc::from(RwLock::new(Self {
+        let ws = Arc::from(Self {
+            uuid: uuid::Uuid::new_v4().to_string(),
+            created: now,
+
             param: param,
             sender: sender.clone(),
             is_connect: is_connected.clone(),
 
-            sendping: now.clone(),
-            recvping: now.clone(),
-        }));
+            sendping: RwLock::new(now),
+            recvping: RwLock::new(now),
+        });
 
         let cloned_is_connected = is_connected.clone();
         let wpt_ws = Arc::downgrade(&ws);
@@ -261,11 +278,10 @@ impl ConnectionReal {
 
             while *cloned_is_connected.read().await {
                 let result = if let Some(ptr) = wpt_ws.upgrade() {
-                    let mut locked = ptr.write().await;
-                    if locked.latency() > locked.param.eject {
+                    if ptr.latency().await > ptr.param.eject {
                         Err(anyhowln!("occur eject for ping test"))
                     } else {
-                        locked.ping().await
+                        ptr.ping().await
                     }
                 } else {
                     Err(anyhowln!("websocket point is NULL"))
@@ -329,7 +345,7 @@ impl ConnectionReal {
 
                             match result {
                                 anyhow::Result::Ok(mili) => {
-                                    spt.write().await.update_pong(mili);
+                                    spt.update_pong(mili).await;
                                     Signal::Received(Message::Pong(payload))
                                 }
                                 Err(e) => Signal::Error(e),
@@ -358,20 +374,17 @@ impl ConnectionReal {
         param: Arc<WebsocketParam>,
         stream: AxumWebsocket,
         f: F,
-    ) -> anyhow::Result<Arc<RwLock<Self>>>
+    ) -> anyhow::Result<Arc<Self>>
     where
-        F: Fn(ConnectionRwArc, Signal) -> Fut + Send + Sync + 'static + Clone,
+        F: Fn(Arc<dyn ConnectionItf>, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         ConnectionReal::init(param, stream, f)
     }
 
-    pub async fn connect<F, Fut>(
-        param: Arc<WebsocketParam>,
-        f: F,
-    ) -> anyhow::Result<Arc<RwLock<Self>>>
+    pub async fn connect<F, Fut>(param: Arc<WebsocketParam>, f: F) -> anyhow::Result<Arc<Self>>
     where
-        F: Fn(ConnectionRwArc, Signal) -> Fut + Send + Sync + 'static + Clone,
+        F: Fn(Arc<dyn ConnectionItf>, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         // let callback = Arc::new(Mutex::new(f));
@@ -383,42 +396,50 @@ impl ConnectionReal {
 }
 
 #[derive(Default)]
-pub struct ConnectionNull;
+pub struct ConnectionNull {
+    created: DateTime<Utc>,
+}
 
 impl ConnectionNull {
-    pub fn new() -> Arc<RwLock<Self>> {
-        RwLock::new(ConnectionNull::default()).into()
+    pub fn new() -> Arc<Self> {
+        let now = Utc::now();
+        Arc::new(ConnectionNull { created: now })
     }
 }
 
 #[async_trait]
 impl ConnectionItf for ConnectionNull {
-    async fn send(&mut self, _message: Message) -> anyhow::Result<()> {
+    async fn send(&self, _message: Message) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn close(&mut self, _params: Option<(u16, String)>) -> anyhow::Result<()> {
+    async fn close(&self, _params: Option<(u16, String)>) -> anyhow::Result<()> {
         Ok(())
     }
     async fn is_connected(&self) -> bool {
         true
     }
+    fn get_uuid(&self) -> &str {
+        ""
+    }
+    fn get_created(&self) -> &DateTime<Utc> {
+        &self.created
+    }
 }
 
 #[derive(Clone)]
 pub struct Websocket {
-    conn: ConnectionRwArc,
+    conn: Arc<dyn ConnectionItf>,
     param: Arc<WebsocketParam>,
-    created: DateTime<Utc>,
-    uuid: String,
 }
 
 impl Websocket {
-    fn new(param: Arc<WebsocketParam>, conn: ConnectionRwArc, created: DateTime<Utc>) -> Self {
+    fn new(
+        param: Arc<WebsocketParam>,
+        conn: Arc<dyn ConnectionItf>,
+    ) -> Self {
         Self {
             conn: conn,
             param: param,
-            created: created,
-            uuid: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -433,17 +454,16 @@ impl Websocket {
     {
         let callback = Arc::new(f);
         let param = Arc::new(param);
-        let created = Utc::now();
-        let params = (param.clone(), created.clone());
+        let cloned_param = param.clone();
         let conn = ConnectionReal::accept(param.clone(), stream, move |conn, signal| {
-            let (param, created) = params.clone();
-            let ws = Self::new(param, conn, created);
+            let param = cloned_param.clone();
             let cloned = callback.clone();
+            let ws = Self::new(param, conn);
             async move {
                 cloned(ws, signal).await;
             }
         })?;
-        Ok(Websocket::new(param, conn, created))
+        Ok(Websocket::new(param, conn))
     }
 
     pub async fn connect<F, Fut>(param: WebsocketParam, f: F) -> anyhow::Result<Self>
@@ -453,14 +473,12 @@ impl Websocket {
     {
         let callback = Arc::new(f);
         let param = Arc::new(param);
-        let created = Utc::now();
         let conn = if param.url.is_empty() {
-            Websocket::new(param, ConnectionNull::new(), created)
+            Websocket::new(param, ConnectionNull::new())
         } else {
-            let params = (param.clone(), created.clone());
+            let cloned_param = param.clone();
             let conn = ConnectionReal::connect(param.clone(), move |conn, signal| {
-                let (param, created) = params.clone();
-                let ws = Self::new(param, conn, created);
+                let ws = Self::new(cloned_param.clone(), conn);
                 let cloned = callback.clone();
 
                 async move {
@@ -468,7 +486,7 @@ impl Websocket {
                 }
             })
             .await?;
-            Websocket::new(param, conn, created)
+            Websocket::new(param, conn)
         };
         Ok(conn)
     }
@@ -478,7 +496,7 @@ impl Websocket {
             return Err(anyhowln!("websocket is disconnected"));
         }
 
-        self.conn.write().await.send(message).await
+        self.conn.send(message).await
     }
 
     pub async fn send_text(&self, text: String) -> anyhow::Result<()> {
@@ -486,7 +504,7 @@ impl Websocket {
             return Err(anyhowln!("websocket is disconnected"));
         }
 
-        self.conn.write().await.send(Message::Text(text)).await
+        self.conn.send(Message::Text(text)).await
     }
 
     pub async fn close(&self, param: Option<(u16, String)>) -> anyhow::Result<()> {
@@ -494,11 +512,11 @@ impl Websocket {
             return Err(anyhowln!("websocket is already disconnected"));
         }
 
-        self.conn.write().await.close(param).await
+        self.conn.close(param).await
     }
 
     pub async fn is_connected(&self) -> bool {
-        self.conn.read().await.is_connected().await
+        self.conn.is_connected().await
     }
 
     pub fn get_param(&self) -> Option<Arc<WebsocketParam>> {
@@ -506,10 +524,10 @@ impl Websocket {
     }
 
     pub fn get_created(&self) -> DateTime<Utc> {
-        self.created.clone()
+        self.conn.get_created().clone()
     }
 
     pub fn get_uuid(&self) -> &str {
-        &self.uuid
+        self.conn.get_uuid()
     }
 }

@@ -4,12 +4,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use cassry::{
-    chrono::{DateTime, Utc},
+    chrono::Utc,
     ring::hmac,
     secrecy::{ExposeSecret, SecretString},
     *,
 };
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
