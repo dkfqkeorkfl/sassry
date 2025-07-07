@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::super::exchange::*;
 use super::super::webserver::websocket::*;
-use cassry::{tokio::sync::RwLock, *};
+use cassry::{secrecy::ExposeSecret, tokio::sync::RwLock, *};
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -670,11 +670,11 @@ impl exchange::RestApiTrait for RestAPI {
     ) -> anyhow::Result<exchange::RequestParam> {
         let milli = Utc::now().timestamp_millis();
 
-        param.body["api_key"] = serde_json::Value::from(ctx.param.key.key.clone());
+        param.body["api_key"] = serde_json::Value::from(ctx.param.key.key.expose_secret().to_string());
         param.body["timestamp"] = serde_json::Value::from(milli);
 
         let urlcode = json::url_encode(&param.body)?;
-        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, ctx.param.key.secret.as_bytes());
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, ctx.param.key.secret.expose_secret().as_bytes());
         let s = hex::encode(ring::hmac::sign(&key, urlcode.as_bytes()));
 
         param.body["sign"] = serde_json::Value::from(s);
@@ -1173,12 +1173,12 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
 
                     let key = ring::hmac::Key::new(
                         ring::hmac::HMAC_SHA256,
-                        ctx.param.key.secret.as_bytes(),
+                        ctx.param.key.secret.expose_secret().as_bytes(),
                     );
                     let sign = hex::encode(ring::hmac::sign(&key, payload.as_bytes()));
                     let json = json!({
                         "op":"auth",
-                        "args":[ctx.param.key.key.clone(), expires, sign]
+                        "args":[ctx.param.key.key.expose_secret().to_string(), expires, sign]
                     });
                     socket.send(Message::Text(json.to_string())).await?;
                     SubscribeResult::None

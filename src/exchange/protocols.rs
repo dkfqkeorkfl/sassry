@@ -8,11 +8,10 @@ use std::{
 
 use super::super::webserver::websocket::*;
 use cassry::{
-    util::{
+    secrecy::SecretString, util::{
         deserialize_anyhow_error, deserialize_chrono_duration, serialize_anyhow_error,
         serialize_chrono_duration,
-    },
-    *,
+    }, *
 };
 use chrono::prelude::*;
 use futures::FutureExt;
@@ -1754,17 +1753,23 @@ pub struct RestAPIParam {
     pub proxy: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ExchangeKey {
     pub tag: String,
     pub exchange: String,
     pub is_testnet: bool,
 
-    pub key: String,
-    pub secret: String,
-    pub passphrase: String,
+    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
+    pub email: SecretString,
 
-    pub email: String,
+    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
+    pub key: SecretString,
+
+    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
+    pub secret: SecretString,
+
+    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
+    pub passphrase: SecretString,
     pub socks5ip: String,
     pub socks5port: String,
 }
@@ -1811,7 +1816,7 @@ impl Default for ExchangeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ExchangeParam {
     pub websocket: WebsocketParam,
     pub restapi: RestAPIParam,
