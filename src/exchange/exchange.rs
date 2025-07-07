@@ -5,7 +5,6 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use bitflags::bitflags;
 use chrono::Utc;
-use futures::FutureExt;
 use reqwest::ClientBuilder;
 use tokio::sync::Mutex;
 
@@ -199,9 +198,9 @@ pub trait RestApiTrait: Send + Sync + 'static {
 }
 
 struct Inner {
-    context: ExchangeContextPtr,
-
     restapi: Arc<dyn RestApiTrait>,
+    
+    context: ExchangeContextPtr,
     websocket: ExchangeSocket,
 }
 
@@ -242,6 +241,11 @@ impl CreateFlag {
 }
 
 impl Inner {
+
+    pub fn get_websocket(&self) -> ExchangeSocket {
+        self.websocket.clone()
+    }
+
     pub async fn new<ResAPI, Websocket>(
         option: ExchangeParam,
         recorder: localdb::LocalDB,
@@ -272,7 +276,7 @@ impl Inner {
         let is_connected_2 = is_connected.clone();
         let restapi_wpt = Arc::downgrade(&restapi);
         let context_wpt = Arc::downgrade(&context);
-        let callback = SubscribeCallbackHelper::new(move |signal, subsicrebe| {
+        let callback = move |signal, subsicrebe| {
             let mut is_connected = is_connected_2.clone();
             let restapi_wpt = restapi_wpt.clone();
             let context_wpt = context_wpt.clone();
@@ -342,12 +346,11 @@ impl Inner {
                     };
                 }
             }
-            .boxed()
-        });
+        };
 
         let st = SubscribeType::Balance;
         let sp = SubscribeType::balance_param().collect();
-        let ws = ExchangeSocket::new::<Websocket>(context.clone(), callback).await?;
+        let ws = ExchangeSocket::new::<Websocket, _, _>(context.clone(), callback).await?;
         if ws.is_subscribed(&st, &sp).await.is_some() {
             ws.subscribe(st, sp).await?;
             loop {
@@ -426,7 +429,7 @@ impl Inner {
         let (is_subscribed, need_subscribe) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&stype, &sparam).await {
                 (
-                    self.websocket.is_connected().await && is_subscribed,
+                    self.websocket.is_connected_all().await && is_subscribed,
                     !is_subscribed,
                 )
             } else {
@@ -463,7 +466,7 @@ impl Inner {
         let (is_subscribed, need_subscribe, is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&stype, &sparam).await {
                 (
-                    self.websocket.is_connected().await && is_subscribed,
+                    self.websocket.is_connected_all().await && is_subscribed,
                     !is_subscribed,
                     true,
                 )
@@ -544,7 +547,7 @@ impl Inner {
         let (is_subscribed, need_subscribe, _is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&stype, &sparam).await {
                 (
-                    self.websocket.is_connected().await && is_subscribed,
+                    self.websocket.is_connected_all().await && is_subscribed,
                     !is_subscribed,
                     true,
                 )
@@ -743,7 +746,7 @@ impl Inner {
         let (is_subscribed, need_subscribe, is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&stype, &sparam).await {
                 (
-                    self.websocket.is_connected().await && is_subscribed,
+                    self.websocket.is_connected_all().await && is_subscribed,
                     !is_subscribed,
                     true,
                 )
@@ -876,6 +879,10 @@ impl Exchange {
             tag: tag.into(),
             ptr: ptr,
         })
+    }
+
+    pub fn get_websocket(&self) -> ExchangeSocket {
+        self.ptr.get_websocket()
     }
 
     pub async fn support_amend(&self) -> bool {

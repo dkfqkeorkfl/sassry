@@ -241,7 +241,7 @@ impl ConnectionReal {
     fn init<S, M, E, F, Fut>(
         param: Arc<WebsocketParam>,
         stream: S,
-        f: F,
+        callback: F,
     ) -> anyhow::Result<Arc<Self>>
     where
         S: futures::Stream<Item = Result<M, E>> + Sink<M, Error = E> + Unpin + Send + 'static,
@@ -252,7 +252,7 @@ impl ConnectionReal {
         F: Fn(Arc<dyn ConnectionItf>, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let callback = Arc::new(f);
+        let callback = Arc::new(callback);
         let (mut write_half, mut read_half) = stream.split();
         let (sender, mut receiver) = unbounded_channel::<Message>();
 
