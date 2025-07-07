@@ -1770,15 +1770,6 @@ pub struct ExchangeKey {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Account {
-    pub serial: u64,
-    pub id: String,
-    pub password: String,
-    pub auth: u64,
-    pub ver: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeConfig {
     #[serde(
         serialize_with = "serialize_chrono_duration",
