@@ -42,7 +42,7 @@ pub trait ExchangeSocketTrait: Send + Sync {
         param: &SubscribeParam,
     ) -> Option<(String, String)> {
         let default = serde_json::Value::default();
-        let json = match param.stype {
+        let json = match param.ty {
             SubscribeType::Balance | SubscribeType::Position => Some(&default),
             SubscribeType::Order | SubscribeType::Orderbook | SubscribeType::PublicTrades => {
                 Some(&param.value)
@@ -50,7 +50,7 @@ pub trait ExchangeSocketTrait: Send + Sync {
         };
 
         if let Some(j) = json {
-            let str = format!("{}:{}", param.stype.clone() as u32, j.to_string());
+            let str = format!("{}:{}", param.ty.clone() as u32, j.to_string());
             return Some(("".to_string(), str));
         }
 
@@ -329,11 +329,11 @@ impl ExchangeSocket {
 
         cassry::info!(
             "proccessing subscribe :({}){}",
-            serde_json::to_string(&param.stype).unwrap(),
+            serde_json::to_string(&param.ty).unwrap(),
             serde_json::to_string(&param.value).unwrap()
         );
 
-        let mut params = HashMap::from([(param.stype.clone(), vec![param.value])]);
+        let mut params = HashMap::from([(param.ty.clone(), vec![param.value])]);
 
         let info = if let Some(websocket) = self.find_connection(&group).await {
             websocket
@@ -361,8 +361,8 @@ impl ExchangeSocket {
                     .await?;
             }
 
-            cassry::info!("success subscribe : {:?}", &param.stype);
-            if let Some(v) = locked.subscribes.get_mut(&param.stype) {
+            cassry::info!("success subscribe : {:?}", &param.ty);
+            if let Some(v) = locked.subscribes.get_mut(&param.ty) {
                 if let Some(value) = params.values_mut().next() {
                     v.extend(value.drain(..));
                 }

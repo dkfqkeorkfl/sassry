@@ -1238,11 +1238,11 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         &self,
         param: &SubscribeParam
     ) -> Option<(String, String)> {
-        match param.stype {
+        match param.ty {
             SubscribeType::Balance => Some(("/v5/private".to_string(), "asset".to_string())),
             SubscribeType::Order | SubscribeType::Position => {
                 let symbol = param.value["market"].as_str()?;
-                let key = format!("{}{}", param.stype.clone() as u32, symbol);
+                let key = format!("{}{}", param.ty.clone() as u32, symbol);
                 Some(("/v5/private".to_string(), key))
             }
             SubscribeType::Orderbook | SubscribeType::PublicTrades => {
@@ -1258,7 +1258,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                     MarketKind::Spot(_) => "/v5/public/spot",
                     _ => return None,
                 };
-                let key = format!("{}{}", param.stype.clone() as u32, symbol);
+                let key = format!("{}{}", param.ty.clone() as u32, symbol);
                 Some((group.to_string(), key))
             }
         }

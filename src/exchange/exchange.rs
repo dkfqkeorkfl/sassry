@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::Weak;
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
@@ -347,7 +346,7 @@ impl Exchange {
             }
         };
 
-        let sp = SubscribeParam::balance().collect();
+        let sp = SubscribeParam::balance().build();
         let ws = ExchangeSocket::new::<Websocket, _, _>(context.clone(), callback).await?;
         if ws.is_subscribed(&sp).await.is_some() {
             ws.subscribe(sp).await?;
@@ -425,7 +424,7 @@ impl Exchange {
     }
 
     pub async fn request_wallet(&self, optional: &str) -> anyhow::Result<DataSet<Asset>> {
-        let sparam = SubscribeParam::balance().collect();
+        let sparam = SubscribeParam::balance().build();
 
         let (is_subscribed, need_subscribe) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
@@ -462,7 +461,7 @@ impl Exchange {
     ) -> anyhow::Result<HashMap<MarketKind, PositionSet>> {
         let sparam = SubscribeParam::position()
             .market(market.clone())
-            .collect();
+            .build();
         let (is_subscribed, need_subscribe, is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
                 (
@@ -541,7 +540,7 @@ impl Exchange {
             .market(market.clone())
             .quantity(quantity.clone())
             .speed(SubscribeSpeed::Fastest)
-            .collect();
+            .build();
 
         let (is_subscribed, need_subscribe, _is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
@@ -599,7 +598,7 @@ impl Exchange {
 
         let sparam = SubscribeParam::order()
             .market(market.clone())
-            .collect();
+            .build();
         if !self
             .websocket
             .is_subscribed(&sparam)
@@ -627,7 +626,7 @@ impl Exchange {
 
         let sparam = SubscribeParam::order()
             .market(market.clone())
-            .collect();
+            .build();
         if !self
             .websocket
             .is_subscribed(&sparam)
@@ -651,7 +650,7 @@ impl Exchange {
     ) -> anyhow::Result<OrderSet> {
         let sparam = SubscribeParam::order()
             .market(market.clone())
-            .collect();
+            .build();
         if !self
             .websocket
             .is_subscribed(&sparam)
@@ -671,7 +670,7 @@ impl Exchange {
     pub async fn request_order_opened(&self, market: &MarketPtr) -> anyhow::Result<OrderSet> {
         let sparam = SubscribeParam::order()
             .market(market.clone())
-            .collect();
+            .build();
         if !self
             .websocket
             .is_subscribed(&sparam)
@@ -695,7 +694,7 @@ impl Exchange {
             .cloned()?;
         let sparam = SubscribeParam::order()
             .market(market.clone())
-            .collect();
+            .build();
         if !self
             .websocket
             .is_subscribed(&sparam)
@@ -734,7 +733,7 @@ impl Exchange {
             .ok_or(anyhowln!("the market of order must be point type"))?;
         let sparam = SubscribeParam::order()
             .market(market.clone())
-            .collect();
+            .build();
 
         let (is_subscribed, need_subscribe, is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {

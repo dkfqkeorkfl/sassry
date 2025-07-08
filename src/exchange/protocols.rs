@@ -1574,7 +1574,7 @@ pub enum SubscribeType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SubscribeParam {
-    pub stype: SubscribeType,
+    pub ty: SubscribeType,
     pub value: serde_json::Value,
 }
 
@@ -1597,7 +1597,7 @@ impl SubscribeParam {
 }
 
 pub struct OrderbookSubscribeBuilder {
-    stype: SubscribeType,
+    ty: SubscribeType,
     market: Option<MarketPtr>,
     speed: SubscribeSpeed,
     quantity: SubscribeQuantity,
@@ -1607,7 +1607,7 @@ pub struct OrderbookSubscribeBuilder {
 impl OrderbookSubscribeBuilder {
     fn new(stype: SubscribeType) -> Self {
         Self {
-            stype,
+            ty: stype,
             market: None,
             speed: Default::default(),
             quantity: Default::default(),
@@ -1634,7 +1634,7 @@ impl OrderbookSubscribeBuilder {
         self
     }
 
-    pub fn collect(self) -> SubscribeParam {
+    pub fn build(self) -> SubscribeParam {
         let market = self.market.unwrap();
         let mut ret = json!({
             "market": serde_json::to_string(&market.kind).unwrap(),
@@ -1652,14 +1652,14 @@ impl OrderbookSubscribeBuilder {
             ret["additional"] = serde_json::Value::from(self.additional);
         }
         SubscribeParam {
-            stype: self.stype,
+            ty: self.ty,
             value: ret,
         }
     }
 }
 
 pub struct MSASubscribeBuilder {
-    stype: SubscribeType,
+    ty: SubscribeType,
     market: Option<MarketPtr>,
     speed: SubscribeSpeed,
     additional: String,
@@ -1668,7 +1668,7 @@ pub struct MSASubscribeBuilder {
 impl MSASubscribeBuilder {
     fn new(stype: SubscribeType) -> Self {
         Self {
-            stype,
+            ty: stype,
             market: None,
             speed: Default::default(),
             additional: Default::default(),
@@ -1690,7 +1690,7 @@ impl MSASubscribeBuilder {
         self
     }
 
-    pub fn collect(self) -> SubscribeParam {
+    pub fn build(self) -> SubscribeParam {
         let market = self.market.unwrap();
         let mut ret = json!({
             "market": serde_json::to_string(&market.kind).unwrap(),
@@ -1704,14 +1704,14 @@ impl MSASubscribeBuilder {
             ret["additional"] = serde_json::Value::from(self.additional);
         }
         SubscribeParam {
-            stype: self.stype,
+            ty: self.ty,
             value: ret,
         }
     }
 }
 
 pub struct MASubscribeBuilder {
-    stype: SubscribeType,
+    ty: SubscribeType,
     market: Option<MarketPtr>,
     additional: String,
 }
@@ -1719,7 +1719,7 @@ pub struct MASubscribeBuilder {
 impl MASubscribeBuilder {
     fn new(stype: SubscribeType) -> Self {
         Self {
-            stype,
+            ty: stype,
             market: None,
             additional: Default::default(),
         }
@@ -1734,7 +1734,7 @@ impl MASubscribeBuilder {
         self
     }
 
-    pub fn collect(self) -> SubscribeParam {
+    pub fn build(self) -> SubscribeParam {
         let mut ret = serde_json::Value::default();
         if self.market.is_some() {
             let market = self.market.unwrap();
@@ -1746,7 +1746,7 @@ impl MASubscribeBuilder {
             ret["additional"] = serde_json::Value::from(self.additional);
         }
         SubscribeParam {
-            stype: self.stype,
+            ty: self.ty,
             value: ret,
         }
     }
