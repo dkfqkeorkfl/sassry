@@ -198,9 +198,9 @@ pub trait RestApiTrait: Send + Sync + 'static {
 }
 
 struct Inner {
-    restapi: Arc<dyn RestApiTrait>,
-    
     context: ExchangeContextPtr,
+
+    restapi: Arc<dyn RestApiTrait>,
     websocket: ExchangeSocket,
 }
 
@@ -241,7 +241,6 @@ impl CreateFlag {
 }
 
 impl Inner {
-
     pub fn get_websocket(&self) -> ExchangeSocket {
         self.websocket.clone()
     }
@@ -297,20 +296,20 @@ impl Inner {
                                 let ret = match restapi.request_wallet(&context_ptr, "").await {
                                     anyhow::Result::Ok(wallet) => {
                                         context_ptr.update(SubscribeResult::Balance(wallet)).await
-                                    },
-                                    anyhow::Result::Err(e) => {
-                                        Err(e)
                                     }
+                                    anyhow::Result::Err(e) => Err(e),
                                 };
 
                                 if let Err(e) = ret {
                                     cassry::error!("cannot initilize because occured error for connecting : {}", e.to_string());
-                                    is_connected.set_flag(ExchangeCreateOpt::IsDirty, true).await;
+                                    is_connected
+                                        .set_flag(ExchangeCreateOpt::IsDirty, true)
+                                        .await;
+                                } else {
+                                    is_connected
+                                        .set_flag(ExchangeCreateOpt::CheckWallet, true)
+                                        .await;
                                 }
-                                else {
-                                    is_connected.set_flag(ExchangeCreateOpt::CheckWallet, true).await;
-                                }
-
                             }
                         }
                         Signal::Closed => {
@@ -319,10 +318,8 @@ impl Inner {
                             drop(locked);
 
                             let mut locked = context_ptr.storage.assets.write().await;
-                            *locked = DataSet::<Asset>::new(
-                                Default::default(),
-                                UpdateType::Snapshot,
-                            );
+                            *locked =
+                                DataSet::<Asset>::new(Default::default(), UpdateType::Snapshot);
                             drop(locked);
                         }
                         _ => {}
@@ -334,7 +331,9 @@ impl Inner {
                                 .set_flag(ExchangeCreateOpt::CheckAuth, true)
                                 .await;
                         } else {
-                            cassry::error!("cannot initilize because failed authorize for connecting.");
+                            cassry::error!(
+                                "cannot initilize because failed authorize for connecting."
+                            );
                             is_connected
                                 .set_flag(ExchangeCreateOpt::IsDirty, true)
                                 .await;
@@ -835,37 +834,28 @@ impl Inner {
 
 #[derive(Clone)]
 pub struct Exchange {
-    tag: Arc<String>,
     ptr: Arc<Inner>,
 }
 
 #[derive(Clone)]
 pub struct ExchangeWeak {
-    tag: Arc<String>,
     ptr: Weak<Inner>,
 }
 
 impl ExchangeWeak {
     pub fn origin(&self) -> Option<Exchange> {
         let ptr = self.ptr.upgrade()?;
-        Some(Exchange {
-            tag: self.tag.clone(),
-            ptr: ptr,
-        })
+        Some(Exchange { ptr: ptr })
     }
 }
 
 impl Exchange {
     pub fn weak(&self) -> ExchangeWeak {
         let wpt = Arc::downgrade(&self.ptr);
-        ExchangeWeak {
-            tag: self.tag.clone(),
-            ptr: wpt,
-        }
+        ExchangeWeak { ptr: wpt }
     }
 
     pub async fn new<ResAPI, Websocket>(
-        tag: String,
         option: ExchangeParam,
         recorder: localdb::LocalDB,
         builder: Option<ClientBuilder>,
@@ -875,10 +865,7 @@ impl Exchange {
         ResAPI: RestApiTrait + Default,
     {
         let ptr = Inner::new::<ResAPI, Websocket>(option, recorder, builder).await?;
-        Ok(Exchange {
-            tag: tag.into(),
-            ptr: ptr,
-        })
+        Ok(Exchange { ptr: ptr })
     }
 
     pub fn get_websocket(&self) -> ExchangeSocket {

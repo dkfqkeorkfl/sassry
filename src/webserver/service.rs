@@ -50,7 +50,6 @@ impl Config {
 pub struct Context {
     pub config: Arc<Config>,
     pub exchanges: manager::Manager,
-    pub db: LocalDB,
 }
 
 #[async_trait]

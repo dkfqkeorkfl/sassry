@@ -80,7 +80,6 @@ impl Inner {
         let exchange = match key.exchange.as_str() {
             "bybit" => {
                 exchange::Exchange::new::<super::bybit::RestAPI, super::bybit::WebsocketItf>(
-                    tag.into(),
                     param,
                     self.db.clone(),
                     None,
