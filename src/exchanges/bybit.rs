@@ -1083,19 +1083,19 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         &self,
         _ctx: &ExchangeContextPtr,
         client: Websocket,
-        s: &HashMap<SubscribeType, Vec<SubscribeParam>>,
+        s: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<()> {
         let body = s
             .iter()
-            .map(|(k, v)| {
+            .map(|(ty, v)| {
                 v.iter()
-                    .map(|p| match k {
+                    .map(|value| match ty {
                         SubscribeType::Order => "order".to_string(),
                         SubscribeType::Position => "position".to_string(),
                         SubscribeType::Balance => "wallet".to_string(),
                         SubscribeType::Orderbook => {
                             let quantity: SubscribeQuantity =
-                                serde_json::from_str(p.value["quantity"].as_str().unwrap()).unwrap();
+                                serde_json::from_str(value["quantity"].as_str().unwrap()).unwrap();
                             let size = match quantity {
                                 SubscribeQuantity::Much => 500,
                                 SubscribeQuantity::Least(str) | SubscribeQuantity::Fixed(str) => {
@@ -1113,10 +1113,10 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                                 _ => 1,
                             };
 
-                            format!("orderbook.{}.{}", size, p.value["symbol"].as_str().unwrap())
+                            format!("orderbook.{}.{}", size, value["symbol"].as_str().unwrap())
                         }
                         SubscribeType::PublicTrades => {
-                            format!("publicTrade.{}", p.value["symbol"].as_str().unwrap())
+                            format!("publicTrade.{}", value["symbol"].as_str().unwrap())
                         }
                     })
                     .collect::<Vec<_>>()
@@ -1227,7 +1227,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         &self,
         ctx: &ExchangeContextPtr,
         group: &String,
-        _subscribes: &HashMap<SubscribeType, Vec<SubscribeParam>>,
+        _subscribes: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<WebsocketParam> {
         let mut param = WebsocketParam::default();
         param.url = format!("{}{}", ctx.param.websocket.url, group);
@@ -1236,18 +1236,17 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
 
     async fn make_group_and_key(
         &self,
-        s: &SubscribeType,
-        param: &SubscribeParam,
+        param: &SubscribeParam
     ) -> Option<(String, String)> {
-        match s {
+        match param.stype {
             SubscribeType::Balance => Some(("/v5/private".to_string(), "asset".to_string())),
             SubscribeType::Order | SubscribeType::Position => {
                 let symbol = param.value["market"].as_str()?;
-                let key = format!("{}{}", s.clone() as u32, symbol);
+                let key = format!("{}{}", param.stype.clone() as u32, symbol);
                 Some(("/v5/private".to_string(), key))
             }
             SubscribeType::Orderbook | SubscribeType::PublicTrades => {
-                let symbol = param.0["market"].as_str()?;
+                let symbol = param.value["market"].as_str()?;
                 let kind = serde_json::from_str::<MarketKind>(symbol).ok()?;
                 let group = match kind {
                     MarketKind::LinearFuture(_) | MarketKind::LinearPerpetual(_) => {
@@ -1259,7 +1258,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                     MarketKind::Spot(_) => "/v5/public/spot",
                     _ => return None,
                 };
-                let key = format!("{}{}", s.clone() as u32, symbol);
+                let key = format!("{}{}", param.stype.clone() as u32, symbol);
                 Some((group.to_string(), key))
             }
         }

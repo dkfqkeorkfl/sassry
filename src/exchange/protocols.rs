@@ -1578,20 +1578,20 @@ pub struct SubscribeParam {
     pub value: serde_json::Value,
 }
 
-impl SubscribeType {
-    pub fn orderbook_param() -> OrderbookSubscribeBuilder {
+impl SubscribeParam {
+    pub fn orderbook() -> OrderbookSubscribeBuilder {
         OrderbookSubscribeBuilder::new(SubscribeType::Orderbook)
     }
-    pub fn public_trades_param() -> MSASubscribeBuilder {
+    pub fn public_trades() -> MSASubscribeBuilder {
         MSASubscribeBuilder::new(SubscribeType::PublicTrades)
     }
-    pub fn order_param() -> MASubscribeBuilder {
+    pub fn order() -> MASubscribeBuilder {
         MASubscribeBuilder::new(SubscribeType::Order)
     }
-    pub fn balance_param() -> MASubscribeBuilder {
+    pub fn balance() -> MASubscribeBuilder {
         MASubscribeBuilder::new(SubscribeType::Balance)
     }
-    pub fn position_param() -> MASubscribeBuilder {
+    pub fn position() -> MASubscribeBuilder {
         MASubscribeBuilder::new(SubscribeType::Position)
     }
 }
