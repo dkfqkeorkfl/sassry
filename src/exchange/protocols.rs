@@ -1562,11 +1562,42 @@ pub struct OrdSerachParam {
     pub closed: Option<chrono::DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SubscribeParam(pub serde_json::Value);
 
-#[derive(Default)]
+#[derive(Eq, PartialEq, Clone, Debug, Hash, Serialize, Deserialize)]
+pub enum SubscribeType {
+    Orderbook = 1,
+    PublicTrades = 2,
+    Order = 3,
+    Balance = 4,
+    Position = 5,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubscribeParam {
+    pub stype: SubscribeType,
+    pub value: serde_json::Value,
+}
+
+impl SubscribeType {
+    pub fn orderbook_param() -> OrderbookSubscribeBuilder {
+        OrderbookSubscribeBuilder::new(SubscribeType::Orderbook)
+    }
+    pub fn public_trades_param() -> MSASubscribeBuilder {
+        MSASubscribeBuilder::new(SubscribeType::PublicTrades)
+    }
+    pub fn order_param() -> MASubscribeBuilder {
+        MASubscribeBuilder::new(SubscribeType::Order)
+    }
+    pub fn balance_param() -> MASubscribeBuilder {
+        MASubscribeBuilder::new(SubscribeType::Balance)
+    }
+    pub fn position_param() -> MASubscribeBuilder {
+        MASubscribeBuilder::new(SubscribeType::Position)
+    }
+}
+
 pub struct OrderbookSubscribeBuilder {
+    stype: SubscribeType,
     market: Option<MarketPtr>,
     speed: SubscribeSpeed,
     quantity: SubscribeQuantity,
@@ -1574,6 +1605,16 @@ pub struct OrderbookSubscribeBuilder {
 }
 
 impl OrderbookSubscribeBuilder {
+    fn new(stype: SubscribeType) -> Self {
+        Self {
+            stype,
+            market: None,
+            speed: Default::default(),
+            quantity: Default::default(),
+            additional: Default::default(),
+        }
+    }
+
     pub fn market(mut self, market: MarketPtr) -> Self {
         self.market = Some(market.clone());
         self
@@ -1610,18 +1651,30 @@ impl OrderbookSubscribeBuilder {
         if !self.additional.is_empty() {
             ret["additional"] = serde_json::Value::from(self.additional);
         }
-        SubscribeParam(ret)
+        SubscribeParam {
+            stype: self.stype,
+            value: ret,
+        }
     }
 }
 
-#[derive(Default)]
 pub struct MSASubscribeBuilder {
+    stype: SubscribeType,
     market: Option<MarketPtr>,
     speed: SubscribeSpeed,
     additional: String,
 }
 
 impl MSASubscribeBuilder {
+    fn new(stype: SubscribeType) -> Self {
+        Self {
+            stype,
+            market: None,
+            speed: Default::default(),
+            additional: Default::default(),
+        }
+    }
+
     pub fn market(mut self, market: MarketPtr) -> Self {
         self.market = Some(market.clone());
         self
@@ -1650,17 +1703,27 @@ impl MSASubscribeBuilder {
         if !self.additional.is_empty() {
             ret["additional"] = serde_json::Value::from(self.additional);
         }
-        SubscribeParam(ret)
+        SubscribeParam {
+            stype: self.stype,
+            value: ret,
+        }
     }
 }
 
-#[derive(Default)]
 pub struct MASubscribeBuilder {
+    stype: SubscribeType,
     market: Option<MarketPtr>,
     additional: String,
 }
 
 impl MASubscribeBuilder {
+    fn new(stype: SubscribeType) -> Self {
+        Self {
+            stype,
+            market: None,
+            additional: Default::default(),
+        }
+    }
     pub fn market(mut self, market: MarketPtr) -> Self {
         self.market = Some(market);
         self
@@ -1682,37 +1745,14 @@ impl MASubscribeBuilder {
         if !self.additional.is_empty() {
             ret["additional"] = serde_json::Value::from(self.additional);
         }
-        SubscribeParam(ret)
+        SubscribeParam {
+            stype: self.stype,
+            value: ret,
+        }
     }
 }
 
-#[repr(u32)]
-#[derive(Eq, PartialEq, Clone, Debug, Hash, Serialize, Deserialize)]
-pub enum SubscribeType {
-    Orderbook = 1,
-    PublicTrades = 2,
-    Order = 3,
-    Balance = 4,
-    Position = 5,
-}
 
-impl SubscribeType {
-    pub fn orderbook_param() -> OrderbookSubscribeBuilder {
-        OrderbookSubscribeBuilder::default()
-    }
-    pub fn public_trades_param() -> MSASubscribeBuilder {
-        MSASubscribeBuilder::default()
-    }
-    pub fn order_param() -> MASubscribeBuilder {
-        MASubscribeBuilder::default()
-    }
-    pub fn balance_param() -> MASubscribeBuilder {
-        MASubscribeBuilder::default()
-    }
-    pub fn position_param() -> MASubscribeBuilder {
-        MASubscribeBuilder::default()
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SubscribeResult {

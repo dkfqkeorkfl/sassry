@@ -1,3 +1,4 @@
+use std::sync::Weak;
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::RwLock;
@@ -7,18 +8,18 @@ use super::super::exchange::*;
 use super::super::webserver::websocket::*;
 
 struct Inner {
-    tags: Arc<Vec<String>>,
-    keys: Arc<HashMap<String, Arc<ExchangeKey>>>,
-    instatnts: HashMap<String, exchange::ExchangeWeak>,
+    tags: Vec<String>,
+    keys: HashMap<String, Arc<ExchangeKey>>,
+    instatnts: HashMap<String, Weak<Exchange>>,
     db: LocalDB,
 }
 
 impl Inner {
-    pub fn new(keys: Arc<HashMap<String, Arc<ExchangeKey>>>, db: LocalDB) -> Self {
+    pub fn new(keys: HashMap<String, Arc<ExchangeKey>>, db: LocalDB) -> Self {
         Inner {
-            tags: Arc::new(keys.keys().cloned().collect::<Vec<_>>()),
+            tags: keys.keys().cloned().collect::<Vec<_>>(),
             keys: keys,
-            instatnts: HashMap::<String, exchange::ExchangeWeak>::default(),
+            instatnts: Default::default(),
             db: db,
         }
     }
@@ -27,7 +28,7 @@ impl Inner {
         &mut self,
         tag: &str,
         config: ExchangeConfig,
-    ) -> anyhow::Result<exchange::Exchange> {
+    ) -> anyhow::Result<ExchangeArc> {
         // let config = ExchangeConfig {
         //     ping_interval: chrono::Duration::minutes(1),
         //     eject: chrono::Duration::seconds(5),
@@ -38,7 +39,7 @@ impl Inner {
         //     opt_max_trades_chche: 2000,
         // };
 
-        if let Some(exchange) = self.instatnts.get(tag).and_then(|weak| weak.origin()) {
+        if let Some(exchange) = self.instatnts.get(tag).and_then(|weak| weak.upgrade()) {
             cassry::info!("Gets an exchange({}) that is already loaded.", tag);
             return Ok(exchange);
         }
@@ -90,7 +91,7 @@ impl Inner {
         }?;
 
         cassry::info!("Exchange({}) loaded successfully", tag);
-        self.instatnts.insert(key.tag.clone(), exchange.weak());
+        self.instatnts.insert(key.tag.clone(), Arc::downgrade(&exchange));
         Ok(exchange)
     }
 }
@@ -101,14 +102,14 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub fn new(keys: Arc<HashMap<String, Arc<ExchangeKey>>>, db: LocalDB) -> Self {
+    pub fn new(keys: HashMap<String, Arc<ExchangeKey>>, db: LocalDB) -> Self {
         let inner = Inner::new(keys, db);
         Self {
             ptr: Arc::new(RwLock::new(inner)),
         }
     }
 
-    pub async fn tags(&self) -> Arc<Vec<String>> {
+    pub async fn tags(&self) -> Vec<String> {
         let locked = self.ptr.read().await;
         locked.tags.clone()
     }
@@ -117,7 +118,7 @@ impl Manager {
         &self,
         tag: &str,
         config: ExchangeConfig,
-    ) -> anyhow::Result<exchange::Exchange> {
+    ) -> anyhow::Result<ExchangeArc> {
         let mut locked = self.ptr.write().await;
         locked.instant(tag, config).await
     }

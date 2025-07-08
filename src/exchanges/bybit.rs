@@ -1095,7 +1095,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                         SubscribeType::Balance => "wallet".to_string(),
                         SubscribeType::Orderbook => {
                             let quantity: SubscribeQuantity =
-                                serde_json::from_str(p.0["quantity"].as_str().unwrap()).unwrap();
+                                serde_json::from_str(p.value["quantity"].as_str().unwrap()).unwrap();
                             let size = match quantity {
                                 SubscribeQuantity::Much => 500,
                                 SubscribeQuantity::Least(str) | SubscribeQuantity::Fixed(str) => {
@@ -1113,10 +1113,10 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                                 _ => 1,
                             };
 
-                            format!("orderbook.{}.{}", size, p.0["symbol"].as_str().unwrap())
+                            format!("orderbook.{}.{}", size, p.value["symbol"].as_str().unwrap())
                         }
                         SubscribeType::PublicTrades => {
-                            format!("publicTrade.{}", p.0["symbol"].as_str().unwrap())
+                            format!("publicTrade.{}", p.value["symbol"].as_str().unwrap())
                         }
                     })
                     .collect::<Vec<_>>()
@@ -1242,7 +1242,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         match s {
             SubscribeType::Balance => Some(("/v5/private".to_string(), "asset".to_string())),
             SubscribeType::Order | SubscribeType::Position => {
-                let symbol = param.0["market"].as_str()?;
+                let symbol = param.value["market"].as_str()?;
                 let key = format!("{}{}", s.clone() as u32, symbol);
                 Some(("/v5/private".to_string(), key))
             }

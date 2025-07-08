@@ -27,31 +27,30 @@ pub trait ExchangeSocketTrait: Send + Sync {
         &self,
         context: &ExchangeContextPtr,
         client: Websocket,
-        s: &HashMap<SubscribeType, Vec<SubscribeParam>>,
+        s: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<()>;
 
     async fn make_websocket_param(
         &self,
         context: &ExchangeContextPtr,
         group: &String,
-        subscribes: &HashMap<SubscribeType, Vec<SubscribeParam>>,
+        subscribes: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<WebsocketParam>;
 
     async fn make_group_and_key(
         &self,
-        s: &SubscribeType,
         param: &SubscribeParam,
     ) -> Option<(String, String)> {
         let default = serde_json::Value::default();
-        let json = match s {
+        let json = match param.stype {
             SubscribeType::Balance | SubscribeType::Position => Some(&default),
             SubscribeType::Order | SubscribeType::Orderbook | SubscribeType::PublicTrades => {
-                Some(&param.0)
+                Some(&param.value)
             }
         };
 
         if let Some(j) = json {
-            let str = format!("{}:{}", s.clone() as u32, j.to_string());
+            let str = format!("{}:{}", param.stype.clone() as u32, j.to_string());
             return Some(("".to_string(), str));
         }
 
@@ -63,7 +62,7 @@ struct Connection {
     pub checkedtime: chrono::DateTime<Utc>,
     pub retryed: u32,
     pub websocket: Websocket,
-    pub subscribes: HashMap<SubscribeType, Vec<SubscribeParam>>,
+    pub subscribes: HashMap<SubscribeType, Vec<serde_json::Value>>,
     pub is_authorized: bool,
 }
 type ConnectionRwArc = RwArc<Connection>;
@@ -310,16 +309,16 @@ impl ExchangeSocket {
         Ok(ExchangeSocket { inner }.into())
     }
 
-    pub async fn is_subscribed(&self, s: &SubscribeType, param: &SubscribeParam) -> Option<bool> {
-        let (_, key) = self.inner.interface.make_group_and_key(s, param).await?;
+    pub async fn is_subscribed(&self, param: &SubscribeParam) -> Option<bool> {
+        let (_, key) = self.inner.interface.make_group_and_key(param).await?;
         Some(self.inner.subscribes.read().await.contains(&key))
     }
 
-    pub async fn subscribe(&self, s: SubscribeType, param: SubscribeParam) -> anyhow::Result<()> {
+    pub async fn subscribe(&self, param: SubscribeParam) -> anyhow::Result<()> {
         let (group, key) = self
             .inner
             .interface
-            .make_group_and_key(&s, &param)
+            .make_group_and_key(&param)
             .await
             .ok_or(anyhowln!("This is an unsupported feature."))?;
 
@@ -330,10 +329,11 @@ impl ExchangeSocket {
 
         cassry::info!(
             "proccessing subscribe :({}){}",
-            serde_json::to_string(&s).unwrap(),
-            serde_json::to_string(&param.0).unwrap()
+            serde_json::to_string(&param.stype).unwrap(),
+            serde_json::to_string(&param.value).unwrap()
         );
-        let mut params = HashMap::from([(s.clone(), vec![param])]);
+
+        let mut params = HashMap::from([(param.stype.clone(), vec![param.value])]);
 
         let info = if let Some(websocket) = self.find_connection(&group).await {
             websocket
@@ -361,8 +361,8 @@ impl ExchangeSocket {
                     .await?;
             }
 
-            cassry::info!("success subscribe : {:?}", &s);
-            if let Some(v) = locked.subscribes.get_mut(&s) {
+            cassry::info!("success subscribe : {:?}", &param.stype);
+            if let Some(v) = locked.subscribes.get_mut(&param.stype) {
                 if let Some(value) = params.values_mut().next() {
                     v.extend(value.drain(..));
                 }
@@ -398,7 +398,7 @@ impl ExchangeSocket {
     async fn make_connection(
         &self,
         group: &String,
-        subscribes: &HashMap<SubscribeType, Vec<SubscribeParam>>,
+        subscribes: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<Connection> {
         let client_param = self
             .inner

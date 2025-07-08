@@ -197,7 +197,7 @@ pub trait RestApiTrait: Send + Sync + 'static {
     }
 }
 
-struct Inner {
+pub struct Exchange {
     context: ExchangeContextPtr,
 
     restapi: Arc<dyn RestApiTrait>,
@@ -240,7 +240,7 @@ impl CreateFlag {
     }
 }
 
-impl Inner {
+impl Exchange {
     pub fn get_websocket(&self) -> ExchangeSocket {
         self.websocket.clone()
     }
@@ -384,7 +384,7 @@ impl Inner {
             }
         }
 
-        let ret = Arc::new(Inner {
+        let ret = Arc::new(Exchange {
             context: context,
             restapi,
             websocket: ws,
@@ -419,6 +419,10 @@ impl Inner {
 
     fn get_storage(&self) -> &ExchangeStorage {
         &self.context.storage
+    }
+
+    pub fn get_context(&self) -> ExchangeContextPtr {
+        self.context.clone()
     }
 
     pub async fn request_wallet(&self, optional: &str) -> anyhow::Result<DataSet<Asset>> {
@@ -832,114 +836,4 @@ impl Inner {
     }
 }
 
-#[derive(Clone)]
-pub struct Exchange {
-    ptr: Arc<Inner>,
-}
-
-#[derive(Clone)]
-pub struct ExchangeWeak {
-    ptr: Weak<Inner>,
-}
-
-impl ExchangeWeak {
-    pub fn origin(&self) -> Option<Exchange> {
-        let ptr = self.ptr.upgrade()?;
-        Some(Exchange { ptr: ptr })
-    }
-}
-
-impl Exchange {
-    pub fn weak(&self) -> ExchangeWeak {
-        let wpt = Arc::downgrade(&self.ptr);
-        ExchangeWeak { ptr: wpt }
-    }
-
-    pub async fn new<ResAPI, Websocket>(
-        option: ExchangeParam,
-        recorder: localdb::LocalDB,
-        builder: Option<ClientBuilder>,
-    ) -> anyhow::Result<Self>
-    where
-        Websocket: ExchangeSocketTrait + Default + 'static,
-        ResAPI: RestApiTrait + Default,
-    {
-        let ptr = Inner::new::<ResAPI, Websocket>(option, recorder, builder).await?;
-        Ok(Exchange { ptr: ptr })
-    }
-
-    pub fn get_websocket(&self) -> ExchangeSocket {
-        self.ptr.get_websocket()
-    }
-
-    pub async fn support_amend(&self) -> bool {
-        self.ptr.support_amend().await
-    }
-
-    pub async fn request_wallet(&self, optional: &str) -> anyhow::Result<DataSet<Asset>> {
-        self.ptr.request_wallet(optional).await
-    }
-
-    pub async fn request_position(
-        &self,
-        market: &MarketPtr,
-    ) -> anyhow::Result<HashMap<MarketKind, PositionSet>> {
-        self.ptr.request_position(market).await
-    }
-
-    pub async fn request_orderbook(
-        &self,
-        market: &MarketPtr,
-        quantity: SubscribeQuantity,
-    ) -> anyhow::Result<OrderBookPtr> {
-        self.ptr.request_orderbook(market, quantity).await
-    }
-
-    pub async fn request_order_submit(
-        &self,
-        market: &MarketPtr,
-        params: &[OrderParam],
-    ) -> anyhow::Result<OrderResult> {
-        self.ptr.request_order_submit(market, params).await
-    }
-
-    pub async fn request_order_search(
-        &self,
-        market: &MarketPtr,
-        param: &OrdSerachParam,
-    ) -> anyhow::Result<OrderSet> {
-        self.ptr.request_order_search(market, param).await
-    }
-
-    pub async fn request_order_opened(&self, market: &MarketPtr) -> anyhow::Result<OrderSet> {
-        self.ptr.request_order_opened(market).await
-    }
-
-    pub async fn request_order_amend(
-        &self,
-        market: &MarketPtr,
-        params: &[(OrderPtr, AmendParam)],
-    ) -> anyhow::Result<OrderResult> {
-        self.ptr.request_order_amend(market, params).await
-    }
-
-    pub async fn request_order_cancel(&self, params: &OrderSet) -> anyhow::Result<OrderResult> {
-        self.ptr.request_order_cancel(params).await
-    }
-
-    pub async fn request_order_query(&self, params: &OrderSet) -> anyhow::Result<OrderResult> {
-        self.ptr.request_order_query(params).await
-    }
-
-    pub async fn get_markets(&self) -> Vec<MarketKind> {
-        self.ptr.get_markets().await
-    }
-
-    pub async fn find_market(&self, kind: &MarketKind) -> Option<MarketPtr> {
-        self.ptr.find_market(kind).await
-    }
-
-    pub async fn get_context(&self) -> Arc<ExchangeContext> {
-        self.ptr.context.clone()
-    }
-}
+pub type ExchangeArc = Arc<Exchange>;
