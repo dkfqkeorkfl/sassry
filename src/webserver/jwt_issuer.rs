@@ -164,11 +164,25 @@ where
                 .ok_or_else(|| ClaimsError::Internal(anyhow::anyhow!("JwtManager not found")))?;
 
             let cookie_value = cookie.value();
-            println!("cookie_value: {}", cookie_value);
-            jwt_manager
+            let claims = jwt_manager
                 .verify_jwt(&cookie_value, None)
                 .await
-                .map_err(|e| ClaimsError::InvalidJwt(e.to_string()))
+                .map_err(|e| ClaimsError::InvalidJwt(e.to_string()))?;
+
+            let session = parts
+                .extensions
+                .get::<tower_sessions::Session>()
+                .ok_or(ClaimsError::Internal(anyhow::anyhow!("session not found")))?;
+            let sub = session
+                .get::<u64>(AccessIssuer::get_session_sub_name())
+                .await
+                .map_err(|e| ClaimsError::Internal(e.into()))?
+                .filter(|sub| claims.sub == *sub);
+            if sub.is_none() {
+                return Err(ClaimsError::InvalidJwt("sub not match".to_string()));
+            }
+
+            Ok(claims)
         }
     }
 }
@@ -220,6 +234,14 @@ pub struct AccessIssuer {
 }
 
 impl AccessIssuer {
+    pub const fn get_cookie_name() -> &'static str {
+        "access"
+    }
+
+    pub const fn get_session_sub_name() -> &'static str {
+        "sub"
+    }
+
     /// 새로운 JwtManager 인스턴스 생성
     pub fn new(
         name: String,
@@ -313,10 +335,6 @@ impl AccessIssuer {
         };
 
         Ok((access_claims, refresh_claims))
-    }
-
-    pub fn get_cookie_name() -> &'static str {
-        "access"
     }
 }
 
