@@ -541,10 +541,10 @@ pub enum CursorType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FeeInfos {
-    bm: CurrencyPair,
-    bt: CurrencyPair,
-    sm: CurrencyPair,
-    st: CurrencyPair,
+    pub bm: CurrencyPair,
+    pub bt: CurrencyPair,
+    pub sm: CurrencyPair,
+    pub st: CurrencyPair,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
