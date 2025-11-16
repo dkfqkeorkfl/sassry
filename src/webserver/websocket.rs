@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -11,7 +11,7 @@ use tokio::sync::{
 };
 
 use axum::extract::ws::{Message as AxumMessage, WebSocket as AxumWebsocket};
-use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
 use cassry::{
     chrono::DateTime,
@@ -387,9 +387,15 @@ impl ConnectionReal {
         F: Fn(Arc<dyn ConnectionItf>, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        // let callback = Arc::new(Mutex::new(f));
         cassry::debug!("connecting websocket : {}", &param.url);
-        let (stream, _) = tokio_tungstenite::connect_async(&param.url).await?;
+        let mut request = param.url.clone().into_client_request()?;
+        for (key, value) in param.header.iter() {
+            let name = axum::http::HeaderName::from_str(key.clone().as_str())?;
+            let value = axum::http::HeaderValue::from_str(value.clone().as_str())?;
+            request.headers_mut().insert(name, value);
+        }
+
+        let (stream, _) = tokio_tungstenite::connect_async(request).await?;
         cassry::debug!("success for websocket : {}", &param.url);
         ConnectionReal::init(param, stream, f)
     }
@@ -433,10 +439,7 @@ pub struct Websocket {
 }
 
 impl Websocket {
-    fn new(
-        param: Arc<WebsocketParam>,
-        conn: Arc<dyn ConnectionItf>,
-    ) -> Self {
+    fn new(param: Arc<WebsocketParam>, conn: Arc<dyn ConnectionItf>) -> Self {
         Self {
             conn: conn,
             param: param,

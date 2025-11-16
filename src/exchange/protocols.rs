@@ -8,10 +8,12 @@ use std::{
 
 use super::super::webserver::websocket::*;
 use cassry::{
-    secrecy::SecretString, util::{
+    secrecy::SecretString,
+    util::{
         deserialize_anyhow_error, deserialize_chrono_duration, serialize_anyhow_error,
         serialize_chrono_duration,
-    }, *
+    },
+    *,
 };
 use chrono::prelude::*;
 use futures::FutureExt;
@@ -236,11 +238,11 @@ pub enum CurrencySide {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TickRange(Decimal, Decimal);
+pub struct TickRange(pub Decimal, pub Decimal);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PrecisionKind {
-    RangeTick(Vec<TickRange>),
+    RangeTick(Arc<Vec<TickRange>>),
     Tick(Decimal),
 }
 
@@ -253,18 +255,29 @@ impl PrecisionKind {
     ) -> anyhow::Result<Decimal> {
         let idx = range
             .binary_search_by(|r| r.0.cmp(val))
-            .unwrap_or_else(|e| e - 1);
+            .map(|idx| {
+                if *side == OrderBookSide::Bid {
+                    idx as i64 - 1
+                } else {
+                    idx as i64
+                }
+            })
+            .unwrap_or_else(|e| e as i64 - 1);
+        if idx < 0 {
+            return Err(anyhowln!("invalid index."));
+        }
+
+        let idx = idx as usize;
         if range[idx].1 == Decimal::ZERO {
             return Err(anyhowln!("tick is Zero."));
         }
 
         let tick = range[idx].1;
-
         if OrderBookSide::Ask == *side {
             let nxt_range = if let Some(nxt) = range.get(idx + 1) {
                 nxt.0
             } else {
-                Decimal::MAX
+                val + (tick * Decimal::from(lvl))
             };
 
             let sz = ((nxt_range - val) / tick).to_u64().unwrap();
@@ -306,7 +319,13 @@ impl PrecisionKind {
 
         let idx = range
             .binary_search_by(|r| r.0.cmp(val))
-            .unwrap_or_else(|e| e - 1);
+            .map(|idx| idx as i64)
+            .unwrap_or_else(|e| e as i64 - 1);
+        if idx < 0 {
+            return Err(anyhowln!("invalid index."));
+        }
+
+        let idx = idx as usize;
         if range[idx].1 == Decimal::ZERO {
             return Err(anyhowln!("tick is Zero."));
         }
@@ -356,7 +375,7 @@ impl PrecisionKind {
         match self {
             PrecisionKind::Tick(tick) => PrecisionKind::calculate_with_tick(val, side, lvl, tick),
             PrecisionKind::RangeTick(ranges) => {
-                PrecisionKind::calculate_with_range(val, side, lvl, ranges)
+                PrecisionKind::calculate_with_range(val, side, lvl, ranges.as_ref())
             }
         }
     }
@@ -372,7 +391,7 @@ impl PrecisionKind {
                 PrecisionKind::calculate_with_tick(amount, &OrderBookSide::Bid, lvl, tick)
             }
             PrecisionKind::RangeTick(ranges) => {
-                PrecisionKind::calculate_with_range(amount, &OrderBookSide::Bid, lvl, ranges)
+                PrecisionKind::calculate_with_range(amount, &OrderBookSide::Bid, lvl, ranges.as_ref())
             }
         }
     }
@@ -1562,7 +1581,6 @@ pub struct OrdSerachParam {
     pub closed: Option<chrono::DateTime<Utc>>,
 }
 
-
 #[derive(Eq, PartialEq, Clone, Debug, Hash, Serialize, Deserialize)]
 pub enum SubscribeType {
     Orderbook = 1,
@@ -1751,8 +1769,6 @@ impl MASubscribeBuilder {
         }
     }
 }
-
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SubscribeResult {
