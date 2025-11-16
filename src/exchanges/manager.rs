@@ -48,6 +48,7 @@ impl Inner {
             .keys
             .get(tag)
             .ok_or(anyhowln!("cannot find tag : {}", tag))?;
+        println!("key: {}", key.exchange);
         let (ws, restapi) = match key.exchange.as_str() {
             "bybit" => {
                 let mut ws = WebsocketParam::default();
@@ -66,6 +67,13 @@ impl Inner {
                 .to_string();
                 Some((ws, restapi))
             }
+            "bithumb" => {
+                let mut ws = WebsocketParam::default();
+                ws.url = "wss://ws-api.bithumb.com/websocket".to_string();
+                let mut restapi = RestAPIParam::default();
+                restapi.url = "https://api.bithumb.com".to_string();
+                Some((ws, restapi))
+            }
             _ => None,
         }
         .ok_or(anyhowln!("invalid exchange name : {}", key.exchange))?;
@@ -81,6 +89,14 @@ impl Inner {
         let exchange = match key.exchange.as_str() {
             "bybit" => {
                 exchange::Exchange::new::<super::bybit::RestAPI, super::bybit::WebsocketItf>(
+                    param,
+                    self.db.clone(),
+                    None,
+                )
+                .await
+            }
+            "bithumb" => {
+                exchange::Exchange::new::<super::bithumb::RestAPI, super::bithumb::WebsocketItf>(
                     param,
                     self.db.clone(),
                     None,
