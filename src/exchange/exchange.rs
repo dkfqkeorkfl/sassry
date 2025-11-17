@@ -136,38 +136,32 @@ pub trait RestApiTrait: Send + Sync + 'static {
         Self: Sized,
     {
         let signed_result = self.sign(&context, param).await?;
-        let (fullpath, body) = if signed_result.method == reqwest::Method::GET {
+        let fullpath = if signed_result.method == reqwest::Method::GET {
             let urlcode = json::url_encode(&signed_result.body)?;
-            (
-                format!(
-                    "{}{}?{}",
-                    context.param.restapi.url, signed_result.path, urlcode
-                ),
-                String::default(),
+            format!(
+                "{}{}?{}",
+                context.param.restapi.url, signed_result.path, urlcode
             )
         } else {
-            (
-                format!("{}{}", context.param.restapi.url, signed_result.path),
-                signed_result.body.to_string(),
-            )
+            format!("{}{}", context.param.restapi.url, signed_result.path)
         };
 
-        cassry::debug!("requesting url({}), body({})", &fullpath, &body);
+        cassry::debug!("requesting url({}), body({})", &fullpath, &signed_result.body.to_string());
         let builder = match signed_result.method {
             reqwest::Method::GET => {
                 let b = context.requester.get(&fullpath);
                 Ok(b)
             }
             reqwest::Method::PUT => {
-                let b = context.requester.put(&fullpath).body(body);
+                let b = context.requester.put(&fullpath).json(&signed_result.body);
                 Ok(b)
             }
             reqwest::Method::DELETE => {
-                let b = context.requester.delete(&fullpath).body(body);
+                let b = context.requester.delete(&fullpath).json(&signed_result.body);
                 Ok(b)
             }
             reqwest::Method::POST => {
-                let b = context.requester.post(&fullpath).body(body);
+                let b = context.requester.post(&fullpath).json(&signed_result.body);
                 Ok(b)
             }
             _ => Err(anyhowln!(
@@ -459,9 +453,7 @@ impl Exchange {
         &self,
         market: &MarketPtr,
     ) -> anyhow::Result<HashMap<MarketKind, PositionSet>> {
-        let sparam = SubscribeParam::position()
-            .market(market.clone())
-            .build();
+        let sparam = SubscribeParam::position().market(market.clone()).build();
         let (is_subscribed, need_subscribe, is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
                 (
@@ -596,15 +588,8 @@ impl Exchange {
             return Err(anyhowln!("param is empty"));
         }
 
-        let sparam = SubscribeParam::order()
-            .market(market.clone())
-            .build();
-        if !self
-            .websocket
-            .is_subscribed(&sparam)
-            .await
-            .unwrap_or(true)
-        {
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
             self.websocket.subscribe(sparam).await?;
         }
 
@@ -624,15 +609,8 @@ impl Exchange {
             return Err(anyhowln!("param is empty"));
         }
 
-        let sparam = SubscribeParam::order()
-            .market(market.clone())
-            .build();
-        if !self
-            .websocket
-            .is_subscribed(&sparam)
-            .await
-            .unwrap_or(true)
-        {
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
             self.websocket.subscribe(sparam).await?;
         }
 
@@ -648,15 +626,8 @@ impl Exchange {
         market: &MarketPtr,
         param: &OrdSerachParam,
     ) -> anyhow::Result<OrderSet> {
-        let sparam = SubscribeParam::order()
-            .market(market.clone())
-            .build();
-        if !self
-            .websocket
-            .is_subscribed(&sparam)
-            .await
-            .unwrap_or(true)
-        {
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
             self.websocket.subscribe(sparam).await?;
         }
 
@@ -668,15 +639,8 @@ impl Exchange {
     }
 
     pub async fn request_order_opened(&self, market: &MarketPtr) -> anyhow::Result<OrderSet> {
-        let sparam = SubscribeParam::order()
-            .market(market.clone())
-            .build();
-        if !self
-            .websocket
-            .is_subscribed(&sparam)
-            .await
-            .unwrap_or(true)
-        {
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
             self.websocket.subscribe(sparam).await?;
         }
 
@@ -692,15 +656,8 @@ impl Exchange {
             .market_ptr()
             .ok_or(anyhowln!("the market of order must be point type"))
             .cloned()?;
-        let sparam = SubscribeParam::order()
-            .market(market.clone())
-            .build();
-        if !self
-            .websocket
-            .is_subscribed(&sparam)
-            .await
-            .unwrap_or(true)
-        {
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
             self.websocket.subscribe(sparam).await?;
         }
 
@@ -731,9 +688,7 @@ impl Exchange {
             .market_ptr()
             .cloned()
             .ok_or(anyhowln!("the market of order must be point type"))?;
-        let sparam = SubscribeParam::order()
-            .market(market.clone())
-            .build();
+        let sparam = SubscribeParam::order().market(market.clone()).build();
 
         let (is_subscribed, need_subscribe, is_support) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {

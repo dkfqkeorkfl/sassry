@@ -86,20 +86,17 @@ impl RestAPI {
         }
     }
 
-    pub fn parse_order(
-        ptime: PacketTime,
-        json: &mut serde_json::Value,
-    ) -> anyhow::Result<OrderPtr> {
+    pub fn parse_order(ptime: PacketTime, json: serde_json::Value) -> anyhow::Result<OrderPtr> {
         // 공식 문서: uuid - 주문의 고유 아이디
         let order_id = json["uuid"].as_str().ok_or(anyhowln!("invalid uuid"))?;
-        let side = match json["side"].as_str().ok_or(anyhowln!("invalid side"))? {
-            "bid" => OrderSide::Buy,
-            "ask" => OrderSide::Sell,
-            _ => return Err(anyhowln!("unknown side")),
+        let side = if "bid" == json["side"].as_str().ok_or(anyhowln!("invalid side"))? {
+            OrderSide::Buy
+        } else {
+            OrderSide::Sell
         };
 
         // 공식 문서: ord_type - 주문 방식 ("limit" 등)
-        let kind = match json["ord_type"]
+        let okind = match json["ord_type"]
             .as_str()
             .ok_or(anyhowln!("invalid ord_type"))?
         {
@@ -155,8 +152,11 @@ impl RestAPI {
         // fee 정보 계산 (paid_fee 사용)
         let paid_fee = float::to_decimal_with_json(&json["paid_fee"]).unwrap_or(Decimal::ZERO);
         let fee = if paid_fee != Decimal::ZERO {
-            // 수수료는 quote currency로 간주
-            CurrencyPair::new_quote(paid_fee)
+            if side == OrderSide::Buy {
+                CurrencyPair::new_quote(paid_fee)
+            } else {
+                CurrencyPair::new_base(paid_fee)
+            }
         } else {
             CurrencyPair::default()
         };
@@ -166,7 +166,7 @@ impl RestAPI {
             oid: order_id.to_string(),
             cid: Default::default(),
 
-            kind: kind,
+            kind: okind,
             price: price,
             amount: amount,
             side: side,
@@ -180,18 +180,19 @@ impl RestAPI {
             created: created_at.with_timezone(&Utc),
             updated: Utc::now(),
 
-            detail: json.take(),
+            detail: json,
         };
 
         Ok(Arc::new(order))
     }
 
-    pub fn make_webtoken(
+    pub fn make_jwt(
         key: &Arc<ExchangeKey>,
         body: &serde_json::Value,
+        path: &str,
     ) -> anyhow::Result<String> {
         let nonce = uuid::Uuid::new_v4().to_string();
-        let timestamp = Utc::now().timestamp_millis().to_string();
+        let timestamp = Utc::now().timestamp_millis();
 
         let payload = if body.is_null() {
             json!({
@@ -200,23 +201,27 @@ impl RestAPI {
                 "access_key" : key.key.expose_secret().to_string(),
             })
         } else {
-            let query_hash =
-                ring::digest::digest(&ring::digest::SHA512, json::url_encode(body)?.as_bytes());
-            json!({
+            let querystring = json::url_encode(body)?;
+            let query_hash = ring::digest::digest(&ring::digest::SHA512, querystring.as_bytes());
+            let payload = json!({
                 "nonce" : nonce,
                 "timestamp": timestamp,
                 "access_key" : key.key.expose_secret().to_string(),
                 "query_hash" : hex::encode(query_hash.as_ref()),
                 "query_hash_alg" : "SHA512",
-            })
+            });
+
+            println!("body: {}, payload: {}", body.to_string(), payload.to_string());
+            payload
         };
 
         let token = jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
+            &Default::default(),
             &payload,
             &jsonwebtoken::EncodingKey::from_secret(key.secret.expose_secret().as_bytes()),
         )?;
 
+        
         Ok(token)
     }
 }
@@ -241,16 +246,9 @@ impl exchange::RestApiTrait for RestAPI {
         context: &ExchangeContextPtr,
         params: &OrderSet,
     ) -> anyhow::Result<OrderResult> {
-        let _market = params
-            .market_ptr()
-            .ok_or(anyhowln!("occur error in bithumb::request_order_cancel"))?;
-
-        let bodies = future::join_all(params.get_datas().values().map(|order| {
-            let order_id = order.oid.clone();
-
+        let bodies = future::join_all(params.get_datas().keys().map(|oid| {
             let body = json!({
-                "endpoint": "/trade/cancel",
-                "uuid": order_id.clone(),
+                "uuid": oid,
             });
 
             let readable = &(*self);
@@ -258,31 +256,26 @@ impl exchange::RestApiTrait for RestAPI {
                 let result = readable
                     .request(
                         context,
-                        exchange::RequestParam::new_mpb(
-                            reqwest::Method::DELETE,
-                            "/trade/cancel",
-                            body,
-                        ),
+                        exchange::RequestParam::new_mpb(reqwest::Method::DELETE, "/v2/order", body),
                     )
                     .await;
-                (order_id, result)
+                (oid.clone(), result)
             }
         }))
         .await;
 
         let mut ret = OrderResult::new(util::get_epoch_first().into(), params.get_market().clone());
-
         for (oid, result) in bodies {
             match result {
-                Ok((_value, ptime)) => {
+                Ok((_root, ptime)) => {
                     let order = params
                         .get_datas()
                         .get(&oid)
                         .ok_or(anyhowln!("Data for the canceled order cannot be found."))?;
 
                     let mut new_order = order.as_ref().clone();
+                    new_order.state = OrderState::Canceling(ptime.recvtime.clone());
                     new_order.ptime = ptime;
-                    new_order.state = OrderState::Canceling(Utc::now());
                     ret.success.insert_raw(new_order);
                 }
                 Err(e) => {
@@ -300,22 +293,14 @@ impl exchange::RestApiTrait for RestAPI {
         params: &[OrderParam],
     ) -> anyhow::Result<OrderResult> {
         // 고빈도 트레이딩 최적화: split 결과 캐싱 또는 직접 파싱
-        let symbol = market.kind.symbol();
-        let (order_currency, payment_currency) = if let Some(pos) = symbol.find('_') {
-            (&symbol[..pos], &symbol[pos + 1..])
-        } else {
-            return Err(anyhowln!("invalid symbol format for bithumb: {}", symbol));
-        };
-
         let bodies = future::join_all(params.iter().map(|param| {
-            let order_type = if param.side.is_buy() { "bid" } else { "ask" };
+            let side = if param.side.is_buy() { "bid" } else { "ask" };
             let body = json!({
-                "endpoint": "/trade/place",
-                "order_currency": order_currency,
-                "payment_currency": payment_currency,
-                "units": param.amount.to_string(),
+                "market": market.kind.symbol(),
+                "order_type": "limit",
+                "side": side,
                 "price": param.price.to_string(),
-                "type": order_type,
+                "volume": param.amount.to_string(),
             });
 
             let readable = &(*self);
@@ -323,11 +308,7 @@ impl exchange::RestApiTrait for RestAPI {
                 readable
                     .request(
                         context,
-                        exchange::RequestParam::new_mpb(
-                            reqwest::Method::POST,
-                            "/trade/place",
-                            body,
-                        ),
+                        exchange::RequestParam::new_mpb(reqwest::Method::POST, "/v2/orders", body),
                     )
                     .await
             }
@@ -342,18 +323,27 @@ impl exchange::RestApiTrait for RestAPI {
         for (i, result) in bodies.into_iter().enumerate() {
             let param = &params[i];
             match result {
-                Ok((value, ptime)) => {
-                    let oid = value["uuid"]
+                Ok((root, ptime)) => {
+                    let oid = root["order_id"]
                         .as_str()
                         .ok_or(anyhowln!("invalid uuid in response"))?
                         .to_string();
 
+                    let created_at = root["created_at"]
+                        .as_str()
+                        .ok_or(anyhowln!("invalid created_at"))
+                        .and_then(|s| {
+                            chrono::DateTime::parse_from_rfc3339(s)
+                                .map_err(|e| anyhowln!("invalid created_at: {}", e))
+                        })?;
+                    let created_at = created_at.with_timezone(&Utc);
+
                     let mut order = Order::from_order_param(param);
                     order.oid = oid;
-                    order.state = OrderState::Ordering(Utc::now());
-                    order.detail = value;
+                    order.state = OrderState::Ordering(created_at.clone());
+                    order.detail = root;
                     order.ptime = ptime;
-
+                    order.created = created_at;
                     ret.success.insert_raw(order);
                 }
                 Err(e) => {
@@ -369,61 +359,33 @@ impl exchange::RestApiTrait for RestAPI {
         context: &ExchangeContextPtr,
         params: &OrderSet,
     ) -> anyhow::Result<OrderResult> {
-        let market = params
-            .market_ptr()
-            .ok_or(anyhowln!("occur error in bithumb::request_order_query"))?;
-
-        // 고빈도 트레이딩 최적화: split 결과 캐싱 또는 직접 파싱
-        let symbol = market.kind.symbol();
-        let (order_currency, payment_currency) = if let Some(pos) = symbol.find('_') {
-            (&symbol[..pos], &symbol[pos + 1..])
-        } else {
-            return Err(anyhowln!("invalid symbol format for bithumb: {}", symbol));
-        };
-
+        let bodies = future::join_all(params.get_datas().keys().map(|oid| {
+            let body = json!({
+                "uuid": oid,
+            });
+            let readable = &(*self);
+            async move {
+                let result = readable
+                    .request(
+                        context,
+                        exchange::RequestParam::new_mpb(reqwest::Method::GET, "/v1/order", body),
+                    )
+                    .await;
+                (oid, result)
+            }
+        }))
+        .await;
         // 빗썸은 개별 주문 조회를 지원하지 않으므로 주문 리스트를 조회
-        let body = json!({
-            "endpoint": "/info/orders",
-            "order_currency": order_currency,
-            "payment_currency": payment_currency,
-        });
-
-        let mut pr = self
-            .request(
-                context,
-                exchange::RequestParam::new_mpb(reqwest::Method::POST, "/info/orders", body),
-            )
-            .await?;
 
         let mut ret = OrderResult::new(util::get_epoch_first().into(), params.get_market().clone());
-
-        // 빗썸 응답 형식 확인 필요 - data 배열 또는 단일 객체일 수 있음
-        let orders = if let Some(array) = pr.0["data"].as_array_mut() {
-            array
-        } else {
-            return Ok(ret);
-        };
-
-        let requested_oids: std::collections::HashSet<String> =
-            params.get_datas().keys().cloned().collect();
-
-        for item in orders {
-            // uuid를 먼저 추출하여 borrowing 문제 해결
-            let order_id_opt = item
-                .get("uuid")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            if let Some(order_id) = order_id_opt {
-                if requested_oids.contains(&order_id) {
-                    match RestAPI::parse_order(pr.1.clone(), item) {
-                        Ok(order) => {
-                            ret.success.insert(order);
-                        }
-                        Err(e) => {
-                            ret.errors.insert(order_id, e);
-                        }
-                    }
+        for (oid, result) in bodies {
+            match result {
+                Ok((value, ptime)) => {
+                    let order = RestAPI::parse_order(ptime.clone(), value)?;
+                    ret.success.insert(order);
+                }
+                Err(e) => {
+                    ret.errors.insert(oid.clone(), e);
                 }
             }
         }
@@ -458,28 +420,6 @@ impl exchange::RestApiTrait for RestAPI {
             .await?;
 
         let mut ret = OrderSet::new(pr.1, MarketVal::Pointer(market.clone()));
-
-        let orders = if let Some(array) = pr.0["data"].as_array_mut() {
-            array
-        } else {
-            return Ok(ret);
-        };
-
-        for item in orders {
-            let status = item["state"].as_str().unwrap_or("");
-            // "wait" 상태만 오픈된 주문으로 간주
-            if status == "wait" {
-                match RestAPI::parse_order(ret.get_packet_time().clone(), item) {
-                    Ok(order) => {
-                        ret.insert(order);
-                    }
-                    Err(_) => {
-                        // 파싱 오류는 무시
-                    }
-                }
-            }
-        }
-
         Ok(ret)
     }
 
@@ -514,45 +454,6 @@ impl exchange::RestApiTrait for RestAPI {
             .await?;
 
         let mut ret = OrderSet::new(pr.1, MarketVal::Pointer(market.clone()));
-
-        let orders = if let Some(array) = pr.0["data"].as_array_mut() {
-            array
-        } else {
-            return Ok(ret);
-        };
-
-        for item in orders {
-            // state 필터링
-            if let Some(state) = &param.state {
-                let status = item["state"].as_str().unwrap_or("");
-                let item_state = match status {
-                    "wait" => OrderState::Opened,
-                    "done" => OrderState::Filled,
-                    "cancel" => OrderState::Cancelled,
-                    _ => OrderState::Rejected,
-                };
-
-                if !matches!(
-                    (state, &item_state),
-                    (OrderState::Opened, OrderState::Opened)
-                        | (OrderState::Filled, OrderState::Filled)
-                        | (OrderState::Cancelled, OrderState::Cancelled)
-                        | (OrderState::Rejected, OrderState::Rejected)
-                ) {
-                    continue;
-                }
-            }
-
-            match RestAPI::parse_order(ret.get_packet_time().clone(), item) {
-                Ok(order) => {
-                    ret.insert(order);
-                }
-                Err(_) => {
-                    // 파싱 오류는 무시
-                }
-            }
-        }
-
         Ok(ret)
     }
 
@@ -661,7 +562,7 @@ impl exchange::RestApiTrait for RestAPI {
         ctx: &ExchangeContextPtr,
         mut param: exchange::RequestParam,
     ) -> anyhow::Result<exchange::RequestParam> {
-        let token = RestAPI::make_webtoken(&ctx.param.key, &param.body)?;
+        let token = RestAPI::make_jwt(&ctx.param.key, &param.body, &param.path)?;
         // 헤더 설정
         param.headers.insert(
             reqwest::header::AUTHORIZATION,
@@ -677,10 +578,14 @@ impl exchange::RestApiTrait for RestAPI {
         param: exchange::RequestParam,
     ) -> anyhow::Result<(serde_json::Value, PacketTime)> {
         let (packet, ptime) = self.req_async(context, param).await?;
-        if packet.status() != reqwest::StatusCode::OK {
+        if !packet.status().is_success() {
+            let json = packet.json::<serde_json::Value>().await?;
+            let notification = json.to_string();
+            println!("failed response: {}", notification);
+
             return Err(anyhowln!(
                 "bithumb API error: {}",
-                packet.status().to_string()
+                notification
             ));
         }
 
@@ -829,13 +734,18 @@ impl WebsocketItf {
         let result = match tp {
             "myAsset" => {
                 let ptime = root["tms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
-                let updated = root["asttms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
+                let updated = root["asttms"]
+                    .as_i64()
+                    .ok_or(anyhowln!("invalid timestamp"))?;
                 let time = Utc.timestamp_millis_opt(ptime).unwrap();
                 let updated = Utc.timestamp_millis_opt(updated).unwrap();
-                
+
                 let mut assets = DataSet::<Asset>::new(PacketTime::new(&time), UpdateType::Partial);
                 for item in root["ast"].as_array_mut().ok_or(anyhowln!("invalid ast"))? {
-                    let currency = item["cu"].as_str().ok_or(anyhowln!("invalid currency"))?.to_string();
+                    let currency = item["cu"]
+                        .as_str()
+                        .ok_or(anyhowln!("invalid currency"))?
+                        .to_string();
                     let total = float::to_decimal_with_json(&item["b"])?;
                     let locked = float::to_decimal_with_json(&item["l"])?;
 
@@ -857,8 +767,9 @@ impl WebsocketItf {
             "myOrder" => {
                 let symbol = root["cd"].as_str().ok_or(anyhowln!("invalid code"))?;
                 let tiemstamp = root["tms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
-                let created = root["otms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
-                
+                let created = root["otms"]
+                    .as_i64()
+                    .ok_or(anyhowln!("invalid timestamp"))?;
 
                 let side = if "BID" == root["ab"].as_str().ok_or(anyhowln!("invalid ask_bid"))? {
                     OrderSide::Buy
@@ -878,7 +789,7 @@ impl WebsocketItf {
                 let (avg, proceed, fee_amount) = if excuted_volume != Decimal::ZERO {
                     let excuted_fee = float::to_decimal_with_json(&root["pf"])?;
                     let excuted_fund = float::to_decimal_with_json(&root["ef"])?;
-                    let avg = excuted_fund/excuted_volume;
+                    let avg = excuted_fund / excuted_volume;
                     (avg, CurrencyPair::new_base(excuted_volume), excuted_fee)
                 } else {
                     (Decimal::ZERO, CurrencyPair::default(), Decimal::ZERO)
@@ -896,7 +807,10 @@ impl WebsocketItf {
                 let order = Order {
                     ptime: PacketTime::new(&time),
                     updated: time,
-                    oid: root["uid"].as_str().ok_or(anyhowln!("invalid uuid"))?.to_string(),
+                    oid: root["uid"]
+                        .as_str()
+                        .ok_or(anyhowln!("invalid uuid"))?
+                        .to_string(),
                     cid: Default::default(),
                     kind: OrderKind::Limit,
                     price: float::to_decimal_with_json(&root["p"])?,
@@ -913,9 +827,14 @@ impl WebsocketItf {
                 };
 
                 os.insert_raw(order);
+                println!(
+                    "receive order: {}",
+                    serde_json::to_string(&os.get_datas().values().collect::<Vec<_>>())?
+                );
                 let mut ret = HashMap::<MarketKind, OrderSet>::default();
                 ret.insert(kind, os);
-                SubscribeResult::Order(ret)
+                // SubscribeResult::Order(ret)
+                SubscribeResult::None
             }
             _ => SubscribeResult::None,
         };
@@ -937,9 +856,16 @@ impl WebsocketItf {
                 let symbol = root["cd"].as_str().ok_or(anyhowln!("invalid code"))?;
                 let tiemstamp = root["tms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
                 let time = Utc.timestamp_micros(tiemstamp).unwrap();
-                let mut orderbook = OrderBook::new(PacketTime::new(&time), MarketVal::Symbol(MarketKind::Spot(symbol.to_string())), time.clone());
+                let mut orderbook = OrderBook::new(
+                    PacketTime::new(&time),
+                    MarketVal::Symbol(MarketKind::Spot(symbol.to_string())),
+                    time.clone(),
+                );
 
-                for item in root["obu"].as_array_mut().ok_or(anyhowln!("invalid orderbook_units"))? {
+                for item in root["obu"]
+                    .as_array_mut()
+                    .ok_or(anyhowln!("invalid orderbook_units"))?
+                {
                     let ask_price = &item["ap"];
                     let bid_price = &item["bp"];
 
@@ -949,7 +875,7 @@ impl WebsocketItf {
                             LazyDecimal::from(item["as"].to_string()),
                         )));
                     }
-        
+
                     if !bid_price.is_null() {
                         orderbook.bid.push(Arc::new((
                             LazyDecimal::from(bid_price.to_string()),
@@ -1126,11 +1052,13 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 Message::Binary(data) => {
                     let text = String::from_utf8_lossy(data.as_slice()).to_string();
                     let json: serde_json::Value = serde_json::from_str(text.as_str())?;
-                    let ty = json["ty"].as_str().ok_or(anyhowln!("invalid type"))?.to_string();
+                    let ty = json["ty"]
+                        .as_str()
+                        .ok_or(anyhowln!("invalid type"))?
+                        .to_string();
                     let result = match ty.as_str() {
                         "myAsset" | "myOrder" => self.parse_private("", ty.as_str(), json).await,
-                        _=> self.parse_public("", ty.as_str(), json).await,
-                        
+                        _ => self.parse_public("", ty.as_str(), json).await,
                     }?;
                     result
                 }
@@ -1150,7 +1078,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
     ) -> anyhow::Result<WebsocketParam> {
         match group.as_str() {
             "/v1/private" => {
-                let token = RestAPI::make_webtoken(&ctx.param.key, &Default::default())?;
+                let token = RestAPI::make_jwt(&ctx.param.key, &Default::default(), "")?;
                 let mut param = WebsocketParam::default();
                 param.url = format!("{}{}", ctx.param.websocket.url, group);
                 param.header.insert(
