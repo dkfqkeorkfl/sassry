@@ -136,17 +136,25 @@ pub trait RestApiTrait: Send + Sync + 'static {
         Self: Sized,
     {
         let signed_result = self.sign(&context, param).await?;
-        let fullpath = if signed_result.method == reqwest::Method::GET {
-            let urlcode = json::url_encode(&signed_result.body)?;
-            format!(
-                "{}{}?{}",
-                context.param.restapi.url, signed_result.path, urlcode
-            )
+        let fullpath = if signed_result.method == reqwest::Method::GET || signed_result.method == reqwest::Method::DELETE {
+            if signed_result.body.is_null() {
+                format!("{}{}", context.param.restapi.url, signed_result.path)
+            } else {
+                let urlcode = json::url_encode(&signed_result.body)?;
+                format!(
+                    "{}{}?{}",
+                    context.param.restapi.url, signed_result.path, urlcode
+                )
+            }
         } else {
             format!("{}{}", context.param.restapi.url, signed_result.path)
         };
 
-        cassry::debug!("requesting url({}), body({})", &fullpath, &signed_result.body.to_string());
+        cassry::debug!(
+            "requesting url({}), body({})",
+            &fullpath,
+            &signed_result.body.to_string()
+        );
         let builder = match signed_result.method {
             reqwest::Method::GET => {
                 let b = context.requester.get(&fullpath);
@@ -157,7 +165,10 @@ pub trait RestApiTrait: Send + Sync + 'static {
                 Ok(b)
             }
             reqwest::Method::DELETE => {
-                let b = context.requester.delete(&fullpath).json(&signed_result.body);
+                let b = context
+                    .requester
+                    .delete(&fullpath)
+                    .json(&signed_result.body);
                 Ok(b)
             }
             reqwest::Method::POST => {

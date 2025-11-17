@@ -1,11 +1,11 @@
 use std::collections::HashSet;
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 
 use std::sync::Arc;
 
 use super::super::exchange::*;
 use super::super::webserver::websocket::*;
-use cassry::{float, secrecy::ExposeSecret, tokio::sync::RwLock, *};
+use cassry::{float, secrecy::ExposeSecret, *};
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -189,17 +189,17 @@ impl RestAPI {
     pub fn make_jwt(
         key: &Arc<ExchangeKey>,
         body: &serde_json::Value,
-        path: &str,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, String)> {
         let nonce = uuid::Uuid::new_v4().to_string();
         let timestamp = Utc::now().timestamp_millis();
 
-        let payload = if body.is_null() {
-            json!({
+        let (querystring, payload) = if body.is_null() {
+            let payload = json!({
                 "nonce" : nonce,
                 "timestamp": timestamp,
                 "access_key" : key.key.expose_secret().to_string(),
-            })
+            });
+            (Default::default(), payload)
         } else {
             let querystring = json::url_encode(body)?;
             let query_hash = ring::digest::digest(&ring::digest::SHA512, querystring.as_bytes());
@@ -211,8 +211,7 @@ impl RestAPI {
                 "query_hash_alg" : "SHA512",
             });
 
-            println!("body: {}, payload: {}", body.to_string(), payload.to_string());
-            payload
+            (querystring, payload)
         };
 
         let token = jsonwebtoken::encode(
@@ -221,8 +220,7 @@ impl RestAPI {
             &jsonwebtoken::EncodingKey::from_secret(key.secret.expose_secret().as_bytes()),
         )?;
 
-        
-        Ok(token)
+        Ok((querystring, token))
     }
 }
 
@@ -248,7 +246,7 @@ impl exchange::RestApiTrait for RestAPI {
     ) -> anyhow::Result<OrderResult> {
         let bodies = future::join_all(params.get_datas().keys().map(|oid| {
             let body = json!({
-                "uuid": oid,
+                "order_id": oid,
             });
 
             let readable = &(*self);
@@ -412,14 +410,14 @@ impl exchange::RestApiTrait for RestAPI {
             "payment_currency": payment_currency,
         });
 
-        let mut pr = self
+        let (_, ptime) = self
             .request(
                 context,
                 exchange::RequestParam::new_mpb(reqwest::Method::POST, "/info/orders", body),
             )
             .await?;
 
-        let mut ret = OrderSet::new(pr.1, MarketVal::Pointer(market.clone()));
+        let ret = OrderSet::new(ptime, MarketVal::Pointer(market.clone()));
         Ok(ret)
     }
 
@@ -427,7 +425,7 @@ impl exchange::RestApiTrait for RestAPI {
         &self,
         context: &ExchangeContextPtr,
         market: &MarketPtr,
-        param: &OrdSerachParam,
+        _param: &OrdSerachParam,
     ) -> anyhow::Result<OrderSet> {
         // 고빈도 트레이딩 최적화: split 결과 캐싱 또는 직접 파싱
         let symbol = market.kind.symbol();
@@ -446,14 +444,14 @@ impl exchange::RestApiTrait for RestAPI {
         // 빗썸은 페이징을 지원하지 않으므로 page 파라미터는 무시
         // state 필터링은 클라이언트 측에서 처리
 
-        let mut pr = self
+        let (_, ptime) = self
             .request(
                 context,
                 exchange::RequestParam::new_mpb(reqwest::Method::POST, "/info/orders", body),
             )
             .await?;
 
-        let mut ret = OrderSet::new(pr.1, MarketVal::Pointer(market.clone()));
+        let ret = OrderSet::new(ptime, MarketVal::Pointer(market.clone()));
         Ok(ret)
     }
 
@@ -562,12 +560,19 @@ impl exchange::RestApiTrait for RestAPI {
         ctx: &ExchangeContextPtr,
         mut param: exchange::RequestParam,
     ) -> anyhow::Result<exchange::RequestParam> {
-        let token = RestAPI::make_jwt(&ctx.param.key, &param.body, &param.path)?;
+        let (querystring, jwt) = RestAPI::make_jwt(&ctx.param.key, &param.body)?;
         // 헤더 설정
         param.headers.insert(
             reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))?,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", jwt))?,
         );
+
+        if !querystring.is_empty()
+            && (param.method == reqwest::Method::GET || param.method == reqwest::Method::DELETE)
+        {
+            param.path = format!("{}?{}", param.path, querystring);
+            param.body = Default::default();
+        }
 
         Ok(param)
     }
@@ -583,10 +588,7 @@ impl exchange::RestApiTrait for RestAPI {
             let notification = json.to_string();
             println!("failed response: {}", notification);
 
-            return Err(anyhowln!(
-                "bithumb API error: {}",
-                notification
-            ));
+            return Err(anyhowln!("bithumb API error: {}", notification));
         }
 
         let json = packet.json::<serde_json::Value>().await?;
@@ -833,8 +835,7 @@ impl WebsocketItf {
                 );
                 let mut ret = HashMap::<MarketKind, OrderSet>::default();
                 ret.insert(kind, os);
-                // SubscribeResult::Order(ret)
-                SubscribeResult::None
+                SubscribeResult::Order(ret)
             }
             _ => SubscribeResult::None,
         };
@@ -1042,8 +1043,8 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
 
     async fn parse_msg(
         &self,
-        ctx: &ExchangeContextPtr,
-        socket: Websocket,
+        _ctx: &ExchangeContextPtr,
+        _socket: Websocket,
         signal: &Signal,
     ) -> anyhow::Result<SubscribeResult> {
         let result = match signal {
@@ -1078,12 +1079,12 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
     ) -> anyhow::Result<WebsocketParam> {
         match group.as_str() {
             "/v1/private" => {
-                let token = RestAPI::make_jwt(&ctx.param.key, &Default::default(), "")?;
+                let (_, jwt) = RestAPI::make_jwt(&ctx.param.key, &Default::default())?;
                 let mut param = WebsocketParam::default();
                 param.url = format!("{}{}", ctx.param.websocket.url, group);
                 param.header.insert(
                     reqwest::header::AUTHORIZATION.to_string(),
-                    format!("Bearer {}", token),
+                    format!("Bearer {}", jwt),
                 );
                 Ok(param)
             }
