@@ -27,14 +27,15 @@ pub trait ExchangeSocketTrait: Send + Sync {
         &self,
         context: &ExchangeContextPtr,
         client: Websocket,
-        s: &HashMap<SubscribeType, Vec<serde_json::Value>>,
+        request: &Option<(SubscribeType, serde_json::Value)>,
+        subscribed: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<()>;
 
     async fn make_websocket_param(
         &self,
         context: &ExchangeContextPtr,
         group: &String,
-        subscribes: &HashMap<SubscribeType, Vec<serde_json::Value>>,
+        request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<WebsocketParam>;
 
     async fn make_group_and_key(
@@ -146,7 +147,7 @@ impl Inner {
                     if *success {
                         locked.is_authorized = *success;
                         self.interface
-                            .subscribe(&self.context, websocket, &locked.subscribes)
+                            .subscribe(&self.context, websocket, &None, &locked.subscribes)
                             .await?;
                     } else {
                         locked.websocket.close(None).await?;
@@ -248,7 +249,7 @@ impl ExchangeSocket {
 
             let ws_param = inner
                 .interface
-                .make_websocket_param(&inner.context, &group, &info.subscribes)
+                .make_websocket_param(&inner.context, &group, &None)
                 .await;
 
             let ws_param = match ws_param {
@@ -333,42 +334,40 @@ impl ExchangeSocket {
             serde_json::to_string(&param.value).unwrap()
         );
 
-        let mut params = HashMap::from([(param.ty.clone(), vec![param.value])]);
+        let request = Some((param.ty.clone(), param.value));
 
         let info = if let Some(websocket) = self.find_connection(&group).await {
             websocket
         } else {
             cassry::info!("Open websocket to subscribe : {}", &group);
-            let websocket = self.make_connection(&group, &params).await?;
+            let websocket = self.make_connection(&group, &request).await?;
             self.insert_connection(group.clone(), websocket).await;
             let result = self
                 .find_connection(&group)
                 .await
                 .ok_or(anyhowln!("occur error that insert client{}", group))?;
+
             result
         };
 
         {
             let mut locked = info.write().await;
+            
             if locked.is_authorized {
                 self.inner
                     .interface
                     .subscribe(
                         self.get_exchange_context(),
                         locked.websocket.clone(),
-                        &params,
+                        &request,
+                        &locked.subscribes,
                     )
                     .await?;
             }
 
             cassry::info!("success subscribe : {:?}", &param.ty);
-            if let Some(v) = locked.subscribes.get_mut(&param.ty) {
-                if let Some(value) = params.values_mut().next() {
-                    v.extend(value.drain(..));
-                }
-            } else {
-                locked.subscribes.extend(params);
-            }
+            let (ty, value) = request.unwrap();
+            locked.subscribes.entry(ty).or_insert(vec![]).push(value);
         }
 
         subscribes.insert(key);
@@ -398,12 +397,12 @@ impl ExchangeSocket {
     async fn make_connection(
         &self,
         group: &String,
-        subscribes: &HashMap<SubscribeType, Vec<serde_json::Value>>,
+        request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<Connection> {
         let client_param = self
             .inner
             .interface
-            .make_websocket_param(self.get_exchange_context(), group, &subscribes)
+            .make_websocket_param(self.get_exchange_context(), group, request)
             .await?;
         let websocket = ExchangeSocket::make_websocket(&self.inner, client_param).await?;
         Ok(Connection::new(websocket))

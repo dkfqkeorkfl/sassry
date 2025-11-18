@@ -1017,8 +1017,23 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         &self,
         _ctx: &ExchangeContextPtr,
         client: Websocket,
-        s: &HashMap<SubscribeType, Vec<serde_json::Value>>,
+        request: &Option<(SubscribeType, serde_json::Value)>,
+        subscribed: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<()> {
+        let s = if let Some((ty, value)) = request {
+            let mut copied = subscribed
+                .iter()
+                .map(|(ty, v)| (ty.clone(), v.iter().collect::<Vec<_>>()))
+                .collect::<HashMap<_, _>>();
+            copied.entry(ty.clone()).or_insert(vec![]).push(value);
+            copied
+        } else {
+            subscribed
+                .iter()
+                .map(|(ty, v)| (ty.clone(), v.iter().collect::<Vec<_>>()))
+                .collect::<HashMap<_, _>>()
+        };
+
         // 빗썸 웹소켓 요청 형식: [{"ticket": "UUID"}, {"type": "...", "codes": [...], "format": "DEFAULT"}]
         for (ty, vs) in s {
             let param = match ty {
@@ -1112,7 +1127,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         &self,
         ctx: &ExchangeContextPtr,
         group: &String,
-        _subscribes: &HashMap<SubscribeType, Vec<serde_json::Value>>,
+        _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<WebsocketParam> {
         match group.as_str() {
             "/v1/private" => {

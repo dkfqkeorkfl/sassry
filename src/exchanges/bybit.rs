@@ -79,7 +79,7 @@ impl RestAPI {
                 _ => None,
             })
             .ok_or(anyhowln!("side is invalid"))?;
-        
+
         let order = Order {
             ptime: ptime,
             oid: oid.to_string(),
@@ -670,11 +670,15 @@ impl exchange::RestApiTrait for RestAPI {
     ) -> anyhow::Result<exchange::RequestParam> {
         let milli = Utc::now().timestamp_millis();
 
-        param.body["api_key"] = serde_json::Value::from(ctx.param.key.key.expose_secret().to_string());
+        param.body["api_key"] =
+            serde_json::Value::from(ctx.param.key.key.expose_secret().to_string());
         param.body["timestamp"] = serde_json::Value::from(milli);
 
         let urlcode = json::url_encode(&param.body)?;
-        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, ctx.param.key.secret.expose_secret().as_bytes());
+        let key = ring::hmac::Key::new(
+            ring::hmac::HMAC_SHA256,
+            ctx.param.key.secret.expose_secret().as_bytes(),
+        );
         let s = hex::encode(ring::hmac::sign(&key, urlcode.as_bytes()));
 
         param.body["sign"] = serde_json::Value::from(s);
@@ -1006,8 +1010,8 @@ impl WebsocketItf {
                     let orderbook =
                         OrderBook::new(ptime, MarketVal::Symbol(symbol.clone()), time.clone());
 
-                        orderbooks.insert(symbol.clone(), orderbook);
-                        orderbooks.get_mut(&symbol).unwrap()
+                    orderbooks.insert(symbol.clone(), orderbook);
+                    orderbooks.get_mut(&symbol).unwrap()
                 };
 
                 if let Some(items) = data["b"].as_array() {
@@ -1083,8 +1087,18 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         &self,
         _ctx: &ExchangeContextPtr,
         client: Websocket,
-        s: &HashMap<SubscribeType, Vec<serde_json::Value>>,
+        request: &Option<(SubscribeType, serde_json::Value)>,
+        subscribed: &HashMap<SubscribeType, Vec<serde_json::Value>>,
     ) -> anyhow::Result<()> {
+        let s = if let Some((ty, value)) = request {
+            HashMap::from([(ty.clone(), vec![value])])
+        } else {
+            subscribed
+                .iter()
+                .map(|(ty, v)| (ty.clone(), v.iter().collect::<Vec<_>>()))
+                .collect::<HashMap<_, _>>()
+        };
+
         let body = s
             .iter()
             .map(|(ty, v)| {
@@ -1227,17 +1241,14 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         &self,
         ctx: &ExchangeContextPtr,
         group: &String,
-        _subscribes: &HashMap<SubscribeType, Vec<serde_json::Value>>,
+        _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<WebsocketParam> {
         let mut param = WebsocketParam::default();
         param.url = format!("{}{}", ctx.param.websocket.url, group);
         Ok(param)
     }
 
-    async fn make_group_and_key(
-        &self,
-        param: &SubscribeParam
-    ) -> Option<(String, String)> {
+    async fn make_group_and_key(&self, param: &SubscribeParam) -> Option<(String, String)> {
         match param.ty {
             SubscribeType::Balance => Some(("/v5/private".to_string(), "asset".to_string())),
             SubscribeType::Order | SubscribeType::Position => {
