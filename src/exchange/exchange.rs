@@ -136,7 +136,9 @@ pub trait RestApiTrait: Send + Sync + 'static {
         Self: Sized,
     {
         let signed_result = self.sign(&context, param).await?;
-        let fullpath = if signed_result.method == reqwest::Method::GET || signed_result.method == reqwest::Method::DELETE {
+        let fullpath = if signed_result.method == reqwest::Method::GET
+            || signed_result.method == reqwest::Method::DELETE
+        {
             if signed_result.body.is_null() {
                 format!("{}{}", context.param.restapi.url, signed_result.path)
             } else {
@@ -151,7 +153,8 @@ pub trait RestApiTrait: Send + Sync + 'static {
         };
 
         cassry::debug!(
-            "requesting url({}), body({})",
+            "requesting method({:?}) url({}), body({})",
+            signed_result.method,
             &fullpath,
             &signed_result.body.to_string()
         );
@@ -740,11 +743,19 @@ impl Exchange {
                 .await?;
 
             if is_support {
-                let sb = HashMap::<MarketKind, OrderSet>::from([(
-                    market.kind.clone(),
-                    ret.success.clone(),
-                )]);
-                self.context.update(SubscribeResult::Order(sb)).await?;
+                let mut os = OrderSet::new(Default::default(), MarketVal::Pointer(market.clone()));
+                for v in ret
+                    .success
+                    .get_datas()
+                    .values()
+                    .filter(|order| !order.state.synchronizable())
+                {
+                    os.insert(v.clone());
+                }
+                if !os.get_datas().is_empty() {
+                    let sb = HashMap::<MarketKind, OrderSet>::from([(market.kind.clone(), os)]);
+                    self.context.update(SubscribeResult::Order(sb)).await?;
+                }
             }
 
             ret
