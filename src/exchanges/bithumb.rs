@@ -1111,7 +1111,10 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                         .to_string();
                     let result = match ty.as_str() {
                         "myAsset" | "myOrder" => self.parse_private("", ty.as_str(), json).await,
-                        _ => self.parse_public("", ty.as_str(), json).await,
+                        "orderbook" => self.parse_public("", ty.as_str(), json).await,
+                        _ => {
+                            Err(anyhowln!("unknown type: {}", ty))
+                        },
                     }?;
                     result
                 }
