@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use std::sync::Arc;
 
@@ -15,8 +15,9 @@ use serde_json::*;
 
 #[derive(Debug)]
 pub struct RestAPI {
-    ranges: Arc<Vec<TickRange>>,
-    specific_ap_precision: HashMap<String, Decimal>,
+    pp_kind_krw: PrecisionKind,
+    specific_pp_precision: HashMap<String, PrecisionKind>,
+    specific_ap_precision: HashMap<String, PrecisionKind>,
 }
 
 impl Default for RestAPI {
@@ -59,20 +60,48 @@ impl Default for RestAPI {
                 float::to_decimal("1000").unwrap(),
             ),
         ];
+
+        let mut specific_pp_precision = HashMap::new();
+        specific_pp_precision.insert("USDT-BTC".to_string(), float::to_decimal("0.01").unwrap());
+        specific_pp_precision.insert("USDT-ETH".to_string(), float::to_decimal("0.01").unwrap());
+        specific_pp_precision.insert("USDT-SOL".to_string(), float::to_decimal("0.01").unwrap());
+        specific_pp_precision.insert("USDT-XRP".to_string(), float::to_decimal("0.0001").unwrap());
+        specific_pp_precision.insert(
+            "USDT-USDC".to_string(),
+            float::to_decimal("0.0001").unwrap(),
+        );
+        specific_pp_precision.insert("USDT-TRX".to_string(), float::to_decimal("0.0001").unwrap());
+        specific_pp_precision.insert(
+            "USDT-DOGE".to_string(),
+            float::to_decimal("0.00001").unwrap(),
+        );
+        specific_pp_precision.insert("USDT-WLD".to_string(), float::to_decimal("0.001").unwrap());
+        let specific_pp_precision = specific_pp_precision
+            .iter()
+            .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(precision.clone())))
+            .collect::<HashMap<_, _>>();
+
         let mut specific_ap_precision = HashMap::new();
         specific_ap_precision.insert(
             "USDT-BTC".to_string(),
             float::to_decimal("0.000001").unwrap(),
         );
         specific_ap_precision.insert("USDT-ETH".to_string(), float::to_decimal("0.0001").unwrap());
+        specific_ap_precision.insert("USDT-SOL".to_string(), float::to_decimal("0.001").unwrap());
         specific_ap_precision.insert("USDT-XRP".to_string(), float::to_decimal("0.1").unwrap());
+        specific_ap_precision.insert("USDT-USDC".to_string(), float::to_decimal("0.001").unwrap());
         specific_ap_precision.insert("USDT-TRX".to_string(), float::to_decimal("1").unwrap());
         specific_ap_precision.insert("USDT-DOGE".to_string(), float::to_decimal("1").unwrap());
-        specific_ap_precision.insert("USDT-SOL".to_string(), float::to_decimal("0.001").unwrap());
-        specific_ap_precision.insert("USDT-USDC".to_string(), float::to_decimal("0.001").unwrap());
+        specific_ap_precision.insert("USDT-WLD".to_string(), float::to_decimal("0.1").unwrap());
+        let specific_ap_precision = specific_ap_precision
+            .iter()
+            .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(precision.clone())))
+            .collect::<HashMap<_, _>>();
+
         RestAPI {
-            ranges: ranges.into(),
+            pp_kind_krw: PrecisionKind::RangeTick(ranges.into()),
             specific_ap_precision: specific_ap_precision,
+            specific_pp_precision: specific_pp_precision,
         }
     }
 }
@@ -107,7 +136,7 @@ impl RestAPI {
         // 공식 문서: price - 주문 당시 화폐 가격 (NumberString)
         let price = float::to_decimal_with_json(&json["price"])?;
         // 공식 문서: state - 주문 상태 ("wait", "done", "cancel" 등)
-        let state = match json["state"].as_str().ok_or(anyhowln!("invalid state"))? {
+        let mut state = match json["state"].as_str().ok_or(anyhowln!("invalid state"))? {
             "wait" => OrderState::Opened,
             "done" => OrderState::Filled,
             "cancel" => OrderState::Cancelled,
@@ -130,6 +159,10 @@ impl RestAPI {
         let executed_volume =
             float::to_decimal_with_json(&json["executed_volume"]).unwrap_or(Decimal::ZERO);
         let (avg, proceed) = if executed_volume != Decimal::ZERO {
+            if state == OrderState::Opened {
+                state = OrderState::PartiallyFilled;
+            }
+
             let weight = json["trades"]
                 .as_array()
                 .ok_or(anyhowln!("invalid trades"))?
@@ -608,7 +641,6 @@ impl exchange::RestApiTrait for RestAPI {
             let response = client.get("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=20&page=1")
             .header("User-Agent", "Mozilla/5.0 (Rust reqwest)").send().await?;
 
-            println!("status: {}", response.status());
             let body = response.json::<Vec<serde_json::Value>>().await?;
             // serde_json::from_str::<Vec<serde_json::Value>>(&body)?;
             let ordered = body
@@ -627,7 +659,7 @@ impl exchange::RestApiTrait for RestAPI {
                 )
                 .await?;
 
-            let symbols = root
+            let mut symbols = root
                 .as_array()
                 .map(|v| {
                     v.iter()
@@ -641,6 +673,9 @@ impl exchange::RestApiTrait for RestAPI {
                         .collect::<Vec<_>>()
                 })
                 .ok_or(anyhowln!("invalid market response format"))?;
+
+            symbols.push("KRW-WLD".to_string());
+            symbols.push("USDT-WLD".to_string());
             symbols
         };
 
@@ -691,11 +726,18 @@ impl exchange::RestApiTrait for RestAPI {
 
             let least = float::to_decimal_with_json(&market["bid"]["min_total"])?;
             let kind = MarketKind::Spot(symbol.to_string());
-            let ap_kind = self
-                .specific_ap_precision
+            let ap_kind =
+                self.specific_ap_precision
+                    .get(symbol)
+                    .cloned()
+                    .unwrap_or(PrecisionKind::Tick(
+                        float::to_decimal("0.00000001").unwrap(),
+                    ));
+            let pp_kind = self
+                .specific_pp_precision
                 .get(symbol)
                 .cloned()
-                .unwrap_or(float::to_decimal("0.00000001").unwrap());
+                .unwrap_or(self.pp_kind_krw.clone());
             let market = Market {
                 ptime: packet.clone(),
                 updated: Utc::now(),
@@ -711,8 +753,8 @@ impl exchange::RestApiTrait for RestAPI {
                     CurrencyPair::new_base(Decimal::MAX),
                 ],
                 price_limit: [Decimal::ZERO, Decimal::MAX],
-                pp_kind: PrecisionKind::RangeTick(self.ranges.clone()),
-                ap_kind: PrecisionKind::Tick(ap_kind),
+                pp_kind: pp_kind,
+                ap_kind: ap_kind,
                 detail: root,
             };
 
@@ -829,10 +871,6 @@ impl WebsocketItf {
                 };
 
                 os.insert_raw(order);
-                println!(
-                    "receive order: {}",
-                    serde_json::to_string(&os.get_datas().values().collect::<Vec<_>>())?
-                );
                 let mut ret = HashMap::<MarketKind, OrderSet>::default();
                 ret.insert(kind, os);
                 SubscribeResult::Order(ret)
@@ -1034,7 +1072,6 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 "format": "SIMPLE",
             });
             let request = serde_json::Value::Array(vec![uuid, param, formatter]);
-            println!("request: {}", request.to_string());
             client.send_text(request.to_string()).await?;
         }
 

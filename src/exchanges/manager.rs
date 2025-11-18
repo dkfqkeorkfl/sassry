@@ -48,7 +48,6 @@ impl Inner {
             .keys
             .get(tag)
             .ok_or(anyhowln!("cannot find tag : {}", tag))?;
-        println!("key: {}", key.exchange);
         let (ws, restapi) = match key.exchange.as_str() {
             "bybit" => {
                 let mut ws = WebsocketParam::default();
