@@ -953,10 +953,7 @@ impl WebsocketItf {
             _ => SubscribeResult::None,
         };
 
-        match result {
-            SubscribeResult::None => self.parse_public(_path, tp, root).await,
-            _ => Ok(result),
-        }
+        Ok(result)
     }
 
     async fn parse_public(
