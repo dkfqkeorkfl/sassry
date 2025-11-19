@@ -196,7 +196,7 @@ pub trait RestApiTrait: Send + Sync + 'static {
             return Err(anyhowln!(
                 "occur eject {}({})",
                 fullpath.to_string(),
-                time.laytency().to_string()
+                time.laytency().as_seconds_f64()
             ));
         }
 
@@ -448,7 +448,7 @@ impl Exchange {
             cassry::debug!(
                 "imported asset from storage : date({}), laytency({})",
                 locked.get_packet_time().recvtime.to_string(),
-                locked.get_packet_time().laytency().to_string()
+                locked.get_packet_time().laytency().as_seconds_f64()
             );
             locked.clone()
         } else {
@@ -485,7 +485,7 @@ impl Exchange {
                 cassry::debug!(
                     "imported position from storage : date({}), laytency({})",
                     value.get_packet_time().recvtime.to_string(),
-                    value.get_packet_time().laytency().to_string()
+                    value.get_packet_time().laytency().as_seconds_f64()
                 );
                 anyhow::Result::Ok(locked.clone())
             } else {
@@ -579,7 +579,7 @@ impl Exchange {
                 "imported orderbook from storage : symbol({}), date({}), laytency({}) unsynced({})",
                 ptr.market.symbol(),
                 ptr.ptime.recvtime.to_string(),
-                ptr.get_packet_time().laytency().to_string(),
+                ptr.get_packet_time().laytency().as_seconds_f64(),
                 (Utc::now() - ptr.updated).as_seconds_f64()
             );
             ptr
