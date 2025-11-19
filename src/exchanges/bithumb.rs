@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::super::exchange::*;
 use super::super::webserver::websocket::*;
+use cassry::tokio::sync::RwLock;
 use cassry::{float, secrecy::ExposeSecret, *};
 
 use async_trait::async_trait;
@@ -765,8 +766,28 @@ impl exchange::RestApiTrait for RestAPI {
     }
 }
 
+struct OrderProceed {
+    pub order: Order,
+    pub excute_fund: Decimal,
+    pub excute_volume: Decimal,
+    pub fee: Decimal,
+}
+
+impl OrderProceed {
+    pub fn new(order: Order) -> Self {
+        Self {
+            order: order,
+            excute_fund: Decimal::ZERO,
+            excute_volume: Decimal::ZERO,
+            fee: Decimal::ZERO,
+        }
+    }
+}
+
 #[derive(Default)]
-pub struct WebsocketItf;
+pub struct WebsocketItf {
+    cached_orders: RwLock<HashMap<String, OrderProceed>>,
+}
 
 impl WebsocketItf {
     async fn parse_private(
@@ -809,67 +830,121 @@ impl WebsocketItf {
                 SubscribeResult::Balance(assets)
             }
             "myOrder" => {
-                let symbol = root["cd"].as_str().ok_or(anyhowln!("invalid code"))?;
+                let mut cached_orders = self.cached_orders.write().await;
+                let oid = root["uid"].as_str().ok_or(anyhowln!("invalid uuid"))?;
                 let tiemstamp = root["tms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
-                let created = root["otms"]
-                    .as_i64()
-                    .ok_or(anyhowln!("invalid timestamp"))?;
-
-                let side = if "BID" == root["ab"].as_str().ok_or(anyhowln!("invalid ask_bid"))? {
-                    OrderSide::Buy
-                } else {
-                    OrderSide::Sell
-                };
-
                 let state = match root["s"].as_str().ok_or(anyhowln!("invalid state"))? {
                     "wait" => OrderState::Opened,
-                    "trade" => OrderState::PartiallyFilled,
                     "done" => OrderState::Filled,
+                    "trade" => OrderState::PartiallyFilled,
                     "cancel" => OrderState::Cancelled,
                     _ => return Err(anyhowln!("unknown state")),
                 };
 
-                let excuted_volume = float::to_decimal_with_json(&root["ev"])?;
-                let (avg, proceed, fee_amount) = if excuted_volume != Decimal::ZERO {
+                let cached_order = if state != OrderState::Opened {
+                    // done, trade, cancel
+                    let cached_order = cached_orders.get_mut(oid);
+                    if cached_order.is_none()
+                        && (state == OrderState::PartiallyFilled || state == OrderState::Cancelled)
+                    {
+                        return Err(anyhowln!("cached order not found"));
+                    }
+                    cached_order
+                } else {
+                    // opene, done
+                    None
+                };
+
+                let excuted_fund = float::to_decimal_with_json(&root["ef"])?;
+                let (avg, proceed, fee, cached_order) = if let Some(cached_order) = cached_order {
+                    // done, trade, cancel
+                    if excuted_fund != Decimal::ZERO {
+                        cached_order.excute_fund += excuted_fund;
+                        cached_order.excute_volume += float::to_decimal_with_json(&root["ev"])?;
+                        cached_order.fee += float::to_decimal_with_json(&root["pf"])?;
+                    }
+                    let avg = if cached_order.excute_volume != Decimal::ZERO {
+                        cached_order.excute_fund / cached_order.excute_volume
+                    } else {
+                        Decimal::ZERO
+                    };
+                    (
+                        avg,
+                        cached_order.excute_volume,
+                        cached_order.fee,
+                        Some(cached_order),
+                    )
+                } else if excuted_fund != Decimal::ZERO {
+                    // done
+                    let excuted_volume = float::to_decimal_with_json(&root["ev"])?;
                     let excuted_fee = float::to_decimal_with_json(&root["pf"])?;
-                    let excuted_fund = float::to_decimal_with_json(&root["ef"])?;
-                    let avg = excuted_fund / excuted_volume;
-                    (avg, CurrencyPair::new_base(excuted_volume), excuted_fee)
+                    (
+                        excuted_fund / excuted_volume,
+                        excuted_volume,
+                        excuted_fee,
+                        None,
+                    )
                 } else {
-                    (Decimal::ZERO, CurrencyPair::default(), Decimal::ZERO)
+                    // wait
+                    (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, None)
                 };
 
-                let fee = if side == OrderSide::Buy {
-                    CurrencyPair::new_quote(fee_amount)
-                } else {
-                    CurrencyPair::new_base(fee_amount)
-                };
-
+                let symbol = root["cd"].as_str().ok_or(anyhowln!("invalid code"))?;
                 let kind = MarketKind::Spot(symbol.to_string());
                 let time = Utc.timestamp_millis_opt(tiemstamp).unwrap();
-                let mut os = OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(kind.clone()));
-                let order = Order {
-                    ptime: PacketTime::new(&time),
-                    updated: time,
-                    oid: root["uid"]
-                        .as_str()
-                        .ok_or(anyhowln!("invalid uuid"))?
-                        .to_string(),
-                    cid: Default::default(),
-                    kind: OrderKind::Limit,
-                    price: float::to_decimal_with_json(&root["p"])?,
-                    amount: float::to_decimal_with_json(&root["v"])?,
-                    side: side,
-                    is_postonly: false,
-                    is_reduce: false,
-                    state: state,
-                    avg: avg,
-                    proceed: proceed,
-                    fee: fee,
-                    created: Utc.timestamp_millis_opt(created).unwrap(),
-                    detail: root.take(),
+                let order = if let Some(cached_order) = cached_order {
+                    cached_order.order.ptime = PacketTime::new(&time);
+                    cached_order.order.state = state;
+                    cached_order.order.avg = avg;
+                    cached_order.order.proceed = CurrencyPair::new_base(proceed);
+                    cached_order.order.fee = CurrencyPair::new_quote(fee);
+                    cached_order.order.updated = time;
+                    cached_order.order.detail = root.take();
+                    cached_order.order.clone()
+                } else {
+                    let created = root["otms"]
+                        .as_i64()
+                        .ok_or(anyhowln!("invalid timestamp"))?;
+                    let side =
+                        if "BID" == root["ab"].as_str().ok_or(anyhowln!("invalid ask_bid"))? {
+                            OrderSide::Buy
+                        } else {
+                            OrderSide::Sell
+                        };
+
+                    let order = Order {
+                        ptime: PacketTime::new(&time),
+                        updated: time,
+                        oid: oid.to_string(),
+                        cid: Default::default(),
+                        kind: OrderKind::Limit,
+                        price: float::to_decimal_with_json(&root["p"])?,
+                        amount: float::to_decimal_with_json(&root["v"])?,
+                        side: side,
+                        is_postonly: false,
+                        is_reduce: false,
+                        state: state.clone(),
+                        avg: avg,
+                        proceed: CurrencyPair::new_base(proceed),
+                        fee: CurrencyPair::new_quote(fee),
+                        created: Utc.timestamp_millis_opt(created).unwrap(),
+                        detail: root.take(),
+                    };
+                    order
                 };
 
+                match &order.state {
+                    OrderState::Opened => {
+                        cached_orders
+                            .insert(order.oid.to_string(), OrderProceed::new(order.clone()));
+                    }
+                    OrderState::Filled | OrderState::Cancelled => {
+                        cached_orders.remove(&order.oid.to_string());
+                    }
+                    _ => {}
+                };
+
+                let mut os = OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(kind.clone()));
                 os.insert_raw(order);
                 let mut ret = HashMap::<MarketKind, OrderSet>::default();
                 ret.insert(kind, os);
@@ -1112,9 +1187,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                     let result = match ty.as_str() {
                         "myAsset" | "myOrder" => self.parse_private("", ty.as_str(), json).await,
                         "orderbook" => self.parse_public("", ty.as_str(), json).await,
-                        _ => {
-                            Err(anyhowln!("unknown type: {}", ty))
-                        },
+                        _ => Err(anyhowln!("unknown type: {}", ty)),
                     }?;
                     result
                 }
