@@ -38,10 +38,7 @@ pub trait ExchangeSocketTrait: Send + Sync {
         request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<WebsocketParam>;
 
-    async fn make_group_and_key(
-        &self,
-        param: &SubscribeParam,
-    ) -> Option<(String, String)> {
+    async fn make_group_and_key(&self, param: &SubscribeParam) -> Option<(String, String)> {
         let default = serde_json::Value::default();
         let json = match param.ty {
             SubscribeType::Balance | SubscribeType::Position => Some(&default),
@@ -60,28 +57,34 @@ pub trait ExchangeSocketTrait: Send + Sync {
 }
 
 struct Connection {
-    pub checkedtime: chrono::DateTime<Utc>,
-    pub retryed: u32,
-    pub websocket: Websocket,
-    pub subscribes: HashMap<SubscribeType, Vec<serde_json::Value>>,
+    pub group: String,
     pub is_authorized: bool,
+    pub subscribes: HashMap<SubscribeType, Vec<serde_json::Value>>,
+
+    pub websocket: Websocket,
+
+    pub lastcheck: chrono::DateTime<Utc>,
+    pub retryed: u32,
 }
 type ConnectionRwArc = RwArc<Connection>;
 
 impl Connection {
-    pub fn new(websocket: Websocket) -> Self {
+    pub fn new(group: String, websocket: Websocket) -> Self {
         Self {
-            checkedtime: Utc::now(),
-            retryed: 0,
-            websocket: websocket,
-            subscribes: Default::default(),
+            group: group,
             is_authorized: false,
+            subscribes: Default::default(),
+
+            websocket: websocket,
+
+            lastcheck: Utc::now(),
+            retryed: 0,
         }
     }
-    pub fn exchange_websocket(&mut self, websocket: Websocket) -> Websocket {
+    pub fn update_websocket(&mut self, websocket: Websocket) -> Websocket {
         let previous = self.websocket.clone();
         self.websocket = websocket;
-        self.checkedtime = Utc::now();
+        self.lastcheck = Utc::now();
         self.retryed = 0;
         self.is_authorized = false;
         previous
@@ -136,22 +139,67 @@ impl Inner {
 
         match &result {
             SubscribeResult::Authorized(success) => {
+                let uuid = websocket.get_uuid();
+
                 cassry::info!(
-                    "authorized websocket : {}",
+                    "authorized websocket(uuid:{}, url:{})",
+                    uuid,
                     websocket.get_param().unwrap_or_default().url
                 );
 
-                let id = websocket.get_uuid();
-                if let Some(info) = self.find_websocket_by_id(&id).await {
-                    let mut locked = info.write().await;
-                    if *success {
-                        locked.is_authorized = *success;
-                        self.interface
-                            .subscribe(&self.context, websocket, &None, &locked.subscribes)
-                            .await?;
-                    } else {
-                        locked.websocket.close(None).await?;
+                if let Some(conn) = self.find_websocket_by_id(&uuid).await {
+                    if *success == false {
+                        cassry::error!(
+                            "rejected authorize websocket(uuid:{}, url:{})",
+                            uuid,
+                            websocket.get_param().unwrap_or_default().url
+                        );
+                        websocket.close(None).await?;
                     }
+
+                    let mut conn = conn.write().await;
+                    if conn.is_authorized == true {
+                        cassry::warn!(
+                            "websocket is already authorized(uuid:{}, url:{})",
+                            uuid,
+                            websocket.get_param().unwrap_or_default().url
+                        );
+                    }
+                    conn.is_authorized = *success;
+                    if !conn.subscribes.is_empty() {
+                        let subs = conn
+                            .subscribes
+                            .iter()
+                            .map(|(key, value)| {
+                                format!(
+                                    "({:?}:{})",
+                                    key,
+                                    value
+                                        .iter()
+                                        .map(|v| v.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        cassry::info!(
+                            "trying to subscribes by stored list(uuid:{}, url:{}): {}",
+                            uuid,
+                            websocket.get_param().unwrap_or_default().url,
+                            subs
+                        );
+                        self.interface
+                            .subscribe(&self.context, websocket, &None, &conn.subscribes)
+                            .await?;
+                    }
+                } else {
+                    cassry::error!(
+                        "cannot find subscribing list by id(uuid:{}, url:{})",
+                        uuid,
+                        websocket.get_param().unwrap_or_default().url
+                    );
+                    websocket.close(None).await?;
                 }
             }
             _ => {}
@@ -181,15 +229,13 @@ impl Inner {
         })
     }
 
-    pub async fn insert_connection(
-        &self,
-        group: String,
-        info: Connection,
-    ) -> Option<ConnectionRwArc> {
-        let id = info.websocket.get_uuid().to_string();
-        let ptr = Arc::new(RwLock::new(info));
+    pub async fn insert_connection(&self, conn: Connection) -> RwArc<Connection> {
+        let id = conn.websocket.get_uuid().to_string();
+        let group = conn.group.clone();
+        let ptr = Arc::new(RwLock::new(conn));
         self.connections_by_id.write().await.insert(id, ptr.clone());
-        self.connections.write().await.insert(group, ptr)
+        self.connections.write().await.insert(group, ptr.clone());
+        ptr
     }
 
     pub async fn find_connection(&self, group: &str) -> Option<ConnectionRwArc> {
@@ -217,13 +263,20 @@ pub struct ExchangeSocket {
 impl ExchangeSocket {
     async fn check_eject(inner: Arc<Inner>) -> anyhow::Result<()> {
         let checktime = &inner.context.param.config.ping_interval;
-        let websockets = inner.connections.read().await.clone();
+        let mut connections = inner.connections_by_id.write().await;
+        let keys = connections.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            let value = if let Some(value) = connections.get(&key).cloned() {
+                value
+            } else {
+                cassry::error!("cannot find connection by id to check eject: {}", key);
+                continue;
+            };
 
-        for (group, value) in &websockets {
             let now = Utc::now();
-            let mut info = value.write().await;
+            let mut conn = value.write().await;
 
-            let penalty = if let Some(v) = 2i32.checked_pow(info.retryed) {
+            let penalty = if let Some(v) = 2i32.checked_pow(conn.retryed) {
                 v
             } else {
                 1
@@ -231,43 +284,64 @@ impl ExchangeSocket {
 
             let interval = *checktime * penalty;
             // if eject time is 5, result is 5 10 20 40 80 160 320;
-            let dur = now - info.checkedtime;
+            let dur = now - conn.lastcheck;
             if interval > dur {
                 continue;
             }
 
-            info.checkedtime = Utc::now();
-            if info.websocket.is_connected().await {
+            conn.lastcheck = Utc::now();
+            if conn.websocket.is_connected().await {
                 continue;
             }
 
             cassry::info!(
-                "it is disconnected websocket : url({}), is_connected({})",
-                info.websocket.get_param().unwrap_or_default().url,
-                info.websocket.is_connected().await
+                "websocket is disconnected : url({}), group({}), uuid({})",
+                conn.websocket.get_param().unwrap_or_default().url,
+                conn.group,
+                conn.websocket.get_uuid()
             );
 
             let ws_param = inner
                 .interface
-                .make_websocket_param(&inner.context, &group, &None)
+                .make_websocket_param(&inner.context, &conn.group, &None)
                 .await;
 
             let ws_param = match ws_param {
                 std::result::Result::Ok(param) => param,
                 Err(e) => {
-                    info.retryed += 1;
-                    cassry::error!("occur an error for reconnecting : {}", e);
+                    conn.retryed += 1;
+                    cassry::error!("occurred an error by making websocket param : reason({}), retryed({}), url({}), group({}), uuid({})", 
+                    e, conn.retryed, conn.websocket.get_param().unwrap_or_default().url, conn.group, conn.websocket.get_uuid());
                     continue;
                 }
             };
 
+            cassry::info!(
+                "Recovering the disconnected websocket : url({}) group({}) uuid({})",
+                conn.websocket.get_param().unwrap_or_default().url,
+                conn.group,
+                conn.websocket.get_uuid()
+            );
+
             match ExchangeSocket::make_websocket(&inner, ws_param).await {
                 std::result::Result::Ok(websocket) => {
-                    info.exchange_websocket(websocket);
+                    let uuid = websocket.get_uuid().to_string();
+                    let prev = conn.update_websocket(websocket);
+                    cassry::info!(
+                        "updated websocket : url({}), group({}), uuid({}->{})",
+                        conn.websocket.get_param().unwrap_or_default().url,
+                        conn.group,
+                        prev.get_uuid(),
+                        uuid
+                    );
+
+                    connections.remove(prev.get_uuid());
+                    connections.insert(uuid, value.clone());
                 }
                 Err(e) => {
-                    info.retryed += 1;
-                    cassry::error!("occur an error for reconnecting : {}", e);
+                    conn.retryed += 1;
+                    cassry::error!("occurred an error by making websocket param : reason({}), retryed({}), url({}), group({}), uuid({})", 
+                    e, conn.retryed, conn.websocket.get_param().unwrap_or_default().url, conn.group, conn.websocket.get_uuid());
                     continue;
                 }
             };
@@ -340,19 +414,13 @@ impl ExchangeSocket {
             websocket
         } else {
             cassry::info!("Open websocket to subscribe : {}", &group);
-            let websocket = self.make_connection(&group, &request).await?;
-            self.insert_connection(group.clone(), websocket).await;
-            let result = self
-                .find_connection(&group)
-                .await
-                .ok_or(anyhowln!("occur error that insert client{}", group))?;
-
-            result
+            let conn = self.make_connection(group, &request).await?;
+            conn
         };
 
         {
             let mut locked = info.write().await;
-            
+
             if locked.is_authorized {
                 self.inner
                     .interface
@@ -396,20 +464,17 @@ impl ExchangeSocket {
 
     async fn make_connection(
         &self,
-        group: &String,
+        group: String,
         request: &Option<(SubscribeType, serde_json::Value)>,
-    ) -> anyhow::Result<Connection> {
+    ) -> anyhow::Result<RwArc<Connection>> {
         let client_param = self
             .inner
             .interface
-            .make_websocket_param(self.get_exchange_context(), group, request)
+            .make_websocket_param(self.get_exchange_context(), &group, request)
             .await?;
         let websocket = ExchangeSocket::make_websocket(&self.inner, client_param).await?;
-        Ok(Connection::new(websocket))
-    }
-
-    async fn insert_connection(&self, group: String, info: Connection) -> Option<ConnectionRwArc> {
-        self.inner.insert_connection(group, info).await
+        let conn = Connection::new(group, websocket);
+        Ok(self.inner.insert_connection(conn).await)
     }
 
     async fn find_connection(&self, group: &str) -> Option<ConnectionRwArc> {

@@ -274,7 +274,9 @@ impl Exchange {
         let context = Arc::new(ExchangeContext::new(option, recorder, client));
 
         let restapi = ResAPI::default();
-        restapi.request_wallet(&context, "").await?;
+        if let Err(e) = restapi.request_wallet(&context, "").await {
+            cassry::error!("cannot request wallet to check apikey during initializing : {}", e.to_string());
+        }
         *context.storage.markets.write().await = restapi.request_market(&context).await?;
 
         let restapi = Arc::new(restapi);
@@ -300,6 +302,7 @@ impl Exchange {
                         }
                         Signal::Opened => {
                             if let Some(restapi) = restapi_wpt.upgrade() {
+                                // 간혹 restapi로 snapshot을 받고 weboscket으로 업데이트 하는 경우가 있어서 request wallet을 해준다.
                                 let ret = match restapi.request_wallet(&context_ptr, "").await {
                                     anyhow::Result::Ok(wallet) => {
                                         context_ptr.update(SubscribeResult::Balance(wallet)).await
