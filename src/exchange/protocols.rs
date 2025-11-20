@@ -519,6 +519,13 @@ impl PacketTime {
         }
     }
 
+    pub fn from_sendtime(time: &chrono::DateTime<Utc>) -> Self {
+        Self {
+            sendtime: time.clone(),
+            recvtime: Utc::now(),
+        }
+    }
+
     pub fn laytency(&self) -> chrono::Duration {
         self.recvtime - self.sendtime
     }

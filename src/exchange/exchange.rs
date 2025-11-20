@@ -581,7 +581,7 @@ impl Exchange {
             cassry::debug!(
                 "imported orderbook from storage : symbol({}), date({}), laytency({}) unsynced({})",
                 ptr.market.symbol(),
-                ptr.ptime.recvtime.to_string(),
+                ptr.updated.to_string(),
                 ptr.get_packet_time().laytency().as_seconds_f64(),
                 (Utc::now() - ptr.updated).as_seconds_f64()
             );

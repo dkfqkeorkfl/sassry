@@ -792,7 +792,6 @@ pub struct WebsocketItf {
 impl WebsocketItf {
     async fn parse_private(
         &self,
-        _path: &str,
         tp: &str,
         mut root: serde_json::Value,
     ) -> anyhow::Result<SubscribeResult> {
@@ -893,7 +892,7 @@ impl WebsocketItf {
                 let kind = MarketKind::Spot(symbol.to_string());
                 let time = Utc.timestamp_millis_opt(tiemstamp).unwrap();
                 let order = if let Some(cached_order) = cached_order {
-                    cached_order.order.ptime = PacketTime::new(&time);
+                    cached_order.order.ptime = PacketTime::from_sendtime(&time);
                     cached_order.order.state = state;
                     cached_order.order.avg = avg;
                     cached_order.order.proceed = CurrencyPair::new_base(proceed);
@@ -913,7 +912,7 @@ impl WebsocketItf {
                         };
 
                     let order = Order {
-                        ptime: PacketTime::new(&time),
+                        ptime: PacketTime::from_sendtime(&time),
                         updated: time,
                         oid: oid.to_string(),
                         cid: Default::default(),
@@ -958,7 +957,6 @@ impl WebsocketItf {
 
     async fn parse_public(
         &self,
-        _path: &str,
         tp: &str,
         mut root: serde_json::Value,
     ) -> anyhow::Result<SubscribeResult> {
@@ -968,7 +966,7 @@ impl WebsocketItf {
                 let tiemstamp = root["tms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
                 let time = Utc.timestamp_micros(tiemstamp).unwrap();
                 let mut orderbook = OrderBook::new(
-                    PacketTime::new(&time),
+                    PacketTime::from_sendtime(&time),
                     MarketVal::Symbol(MarketKind::Spot(symbol.to_string())),
                     time.clone(),
                 );
@@ -1182,8 +1180,8 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                         .ok_or(anyhowln!("invalid type"))?
                         .to_string();
                     let result = match ty.as_str() {
-                        "myAsset" | "myOrder" => self.parse_private("", ty.as_str(), json).await,
-                        "orderbook" => self.parse_public("", ty.as_str(), json).await,
+                        "myAsset" | "myOrder" => self.parse_private(ty.as_str(), json).await,
+                        "orderbook" => self.parse_public(ty.as_str(), json).await,
                         _ => Err(anyhowln!("unknown type: {}", ty)),
                     }?;
                     result
