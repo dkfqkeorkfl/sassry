@@ -95,6 +95,7 @@ impl Default for RestAPI {
         specific_ap_precision.insert("USDT-TRX".to_string(), float::to_decimal("1").unwrap());
         specific_ap_precision.insert("USDT-DOGE".to_string(), float::to_decimal("1").unwrap());
         specific_ap_precision.insert("USDT-WLD".to_string(), float::to_decimal("0.1").unwrap());
+        specific_ap_precision.insert("BTC-XRP".to_string(), float::to_decimal("0.0000001").unwrap());
         let specific_ap_precision = specific_ap_precision
             .iter()
             .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(precision.clone())))
@@ -709,7 +710,7 @@ impl exchange::RestApiTrait for RestAPI {
             let market = &root["market"];
             let symbol = market["id"].as_str().ok_or(anyhowln!("invalid symbol"))?;
             let (quote, base) = match symbol.split_once('-') {
-                Some((base, quote)) => (quote, base),
+                Some((quote, base)) => (quote, base),
                 None => return Err(anyhowln!("invalid symbol: {}", symbol)),
             };
 
@@ -739,7 +740,14 @@ impl exchange::RestApiTrait for RestAPI {
                 .specific_pp_precision
                 .get(symbol)
                 .cloned()
-                .unwrap_or(self.pp_kind_krw.clone());
+                .unwrap_or_else(|| {
+                    if quote == "BTC" {
+                        PrecisionKind::Tick(float::to_decimal("0.00000001").unwrap())
+                    } else {
+                        self.pp_kind_krw.clone()
+                    }
+                });
+                
             let market = Market {
                 ptime: packet.clone(),
                 updated: Utc::now(),
@@ -850,8 +858,7 @@ impl WebsocketItf {
                     proceed.excute_fund / proceed.excute_volume
                 } else if proceed.excute_volume != Decimal::ZERO {
                     proceed.excute_fund / proceed.excute_volume
-                }
-                else {
+                } else {
                     Decimal::ZERO
                 };
 
@@ -909,7 +916,7 @@ impl WebsocketItf {
                     OrderState::Opened => {
                         proceed.order = Some(order.clone());
                     }
-                    OrderState::Filled  => {
+                    OrderState::Filled => {
                         // done일 때, 특정 상황에서 remained_volume가 이상하게 나오는 문제로 인하여 별도 예외 처리리
                         if order.proceed_real() != order.amount {
                             if order.avg == Decimal::ZERO {
@@ -931,7 +938,7 @@ impl WebsocketItf {
                         }
                         cached_orders.remove(&order.oid.to_string());
                     }
-                    OrderState::Cancelled=> {
+                    OrderState::Cancelled => {
                         // cancelled일 때, remained_volume는 매우 잘 나옴.
                         if order.proceed_real() + remained_volume != order.amount {
                             if order.avg == Decimal::ZERO {
@@ -953,7 +960,7 @@ impl WebsocketItf {
                         }
                         cached_orders.remove(&order.oid.to_string());
                     }
-                    
+
                     _ => {}
                 };
 
