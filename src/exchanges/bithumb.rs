@@ -825,8 +825,6 @@ impl WebsocketItf {
                     assets.insert_raw(currency, asset);
                 }
 
-                // let asd= serde_json::to_string(&assets.get_datas().values().collect::<Vec<_>>())?;
-                // println!("assets: {}", asd);
                 SubscribeResult::Balance(assets)
             }
             "myOrder" => {
@@ -912,7 +910,7 @@ impl WebsocketItf {
                         proceed.order = Some(order.clone());
                     }
                     OrderState::Filled  => {
-                        // done일 때, remained_volume가 이상하게 나오는 문제로 인하여 별도 예외 처리리
+                        // done일 때, 특정 상황에서 remained_volume가 이상하게 나오는 문제로 인하여 별도 예외 처리리
                         if order.proceed_real() != order.amount {
                             if order.avg == Decimal::ZERO {
                                 cassry::error!(
@@ -934,6 +932,7 @@ impl WebsocketItf {
                         cached_orders.remove(&order.oid.to_string());
                     }
                     OrderState::Cancelled=> {
+                        // cancelled일 때, remained_volume는 매우 잘 나옴.
                         if order.proceed_real() + remained_volume != order.amount {
                             if order.avg == Decimal::ZERO {
                                 cassry::error!(
