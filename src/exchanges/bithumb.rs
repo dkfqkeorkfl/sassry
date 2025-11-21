@@ -95,7 +95,10 @@ impl Default for RestAPI {
         specific_ap_precision.insert("USDT-TRX".to_string(), float::to_decimal("1").unwrap());
         specific_ap_precision.insert("USDT-DOGE".to_string(), float::to_decimal("1").unwrap());
         specific_ap_precision.insert("USDT-WLD".to_string(), float::to_decimal("0.1").unwrap());
-        specific_ap_precision.insert("BTC-XRP".to_string(), float::to_decimal("0.0000001").unwrap());
+        specific_ap_precision.insert(
+            "BTC-XRP".to_string(),
+            float::to_decimal("0.0000001").unwrap(),
+        );
         let specific_ap_precision = specific_ap_precision
             .iter()
             .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(precision.clone())))
@@ -619,17 +622,20 @@ impl exchange::RestApiTrait for RestAPI {
         param: exchange::RequestParam,
     ) -> anyhow::Result<(serde_json::Value, PacketTime)> {
         let (packet, ptime) = self.req_async(context, param).await?;
-        if !packet.status().is_success() {
-            let json = packet.json::<serde_json::Value>().await?;
-            let notification = json.to_string();
-            println!("failed response: {}", notification);
+        let status = packet.status();
+        let json = match packet.json::<serde_json::Value>().await {
+            Ok(json) => json,
+            Err(e) => {
+                return Err(anyhowln!("failed to parse response: {}", e));
+            }
+        };
 
-            return Err(anyhowln!("bithumb API error: {}", notification));
+        let str = json.to_string();
+        println!("bithumb response({:?}): {}", status, str);
+        if !status.is_success() {
+            return Err(anyhowln!("bithumb API error: {}", str));
         }
 
-        let json = packet.json::<serde_json::Value>().await?;
-
-        println!("json: {}", json.to_string());
         Ok((json, ptime))
     }
 
@@ -747,7 +753,7 @@ impl exchange::RestApiTrait for RestAPI {
                         self.pp_kind_krw.clone()
                     }
                 });
-                
+
             let market = Market {
                 ptime: packet.clone(),
                 updated: Utc::now(),

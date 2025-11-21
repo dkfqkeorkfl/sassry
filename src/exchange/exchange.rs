@@ -754,19 +754,11 @@ impl Exchange {
                 .await?;
 
             if is_support {
-                let mut os = OrderSet::new(Default::default(), MarketVal::Pointer(market.clone()));
-                for v in ret
-                    .success
-                    .get_datas()
-                    .values()
-                    .filter(|order| !order.state.synchronizable())
-                {
-                    os.insert(v.clone());
-                }
-                if !os.get_datas().is_empty() {
-                    let sb = HashMap::<MarketKind, OrderSet>::from([(market.kind.clone(), os)]);
-                    self.context.update(SubscribeResult::Order(sb)).await?;
-                }
+                let sb = HashMap::<MarketKind, OrderSet>::from([(
+                    market.kind.clone(),
+                    ret.success.clone(),
+                )]);
+                self.context.update(SubscribeResult::Order(sb)).await?;
             }
 
             ret

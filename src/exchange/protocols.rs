@@ -1870,7 +1870,7 @@ impl Default for ExchangeConfig {
         Self {
             ping_interval: chrono::Duration::minutes(1),
             eject: chrono::Duration::seconds(5),
-            sync_expired_duration: chrono::Duration::seconds(20),
+            sync_expired_duration: chrono::Duration::seconds(15),
             state_expired_duration: chrono::Duration::minutes(1),
 
             opt_max_order_chche: 2000,
