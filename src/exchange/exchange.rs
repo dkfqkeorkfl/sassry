@@ -275,7 +275,10 @@ impl Exchange {
 
         let restapi = ResAPI::default();
         if let Err(e) = restapi.request_wallet(&context, "").await {
-            cassry::error!("cannot request wallet to check apikey during initializing : {}", e.to_string());
+            cassry::error!(
+                "cannot request wallet to check apikey during initializing : {}",
+                e.to_string()
+            );
         }
         *context.storage.markets.write().await = restapi.request_market(&context).await?;
 
@@ -335,7 +338,10 @@ impl Exchange {
                         _ => {}
                     }
 
-                    if let SubscribeResult::Authorized(success) = &subsicrebe {
+                    if let SubscribeResult::Err(e) = &subsicrebe {
+                        cassry::error!("SubscribeResult::Err : {}", e.to_string());
+                    }
+                    else if let SubscribeResult::Authorized(success) = &subsicrebe {
                         if *success {
                             is_connected
                                 .set_flag(ExchangeCreateOpt::CheckAuth, true)
@@ -577,7 +583,6 @@ impl Exchange {
         };
 
         let ptr = if let Some(ptr) = ret {
-            
             cassry::debug!(
                 "imported orderbook from storage : symbol({}), date({}), laytency({}) unsynced({})",
                 ptr.market.symbol(),

@@ -1,3 +1,4 @@
+use std::clone;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -767,14 +768,14 @@ impl exchange::RestApiTrait for RestAPI {
 }
 
 struct OrderProceed {
-    pub order: Order,
+    pub order: Option<Order>,
     pub excute_fund: Decimal,
     pub excute_volume: Decimal,
     pub fee: Decimal,
 }
 
 impl OrderProceed {
-    pub fn new(order: Order) -> Self {
+    pub fn new(order: Option<Order>) -> Self {
         Self {
             order: order,
             excute_fund: Decimal::ZERO,
@@ -786,7 +787,7 @@ impl OrderProceed {
 
 #[derive(Default)]
 pub struct WebsocketItf {
-    cached_orders: RwLock<HashMap<String, OrderProceed>>,
+    proceeds: RwLock<HashMap<String, OrderProceed>>,
 }
 
 impl WebsocketItf {
@@ -829,7 +830,7 @@ impl WebsocketItf {
                 SubscribeResult::Balance(assets)
             }
             "myOrder" => {
-                let mut cached_orders = self.cached_orders.write().await;
+                let mut cached_orders = self.proceeds.write().await;
                 let oid = root["uid"].as_str().ok_or(anyhowln!("invalid uuid"))?;
                 let tiemstamp = root["tms"].as_i64().ok_or(anyhowln!("invalid timestamp"))?;
                 let state = match root["s"].as_str().ok_or(anyhowln!("invalid state"))? {
@@ -840,67 +841,40 @@ impl WebsocketItf {
                     _ => return Err(anyhowln!("unknown state")),
                 };
 
-                let cached_order = if state != OrderState::Opened {
-                    // done, trade, cancel
-                    let cached_order = cached_orders.get_mut(oid);
-                    if cached_order.is_none()
-                        && (state == OrderState::PartiallyFilled || state == OrderState::Cancelled)
-                    {
-                        return Err(anyhowln!("cached order not found"));
-                    }
-                    cached_order
-                } else {
-                    // opene, done
-                    None
-                };
-
+                let proceed = cached_orders
+                    .entry(oid.to_string())
+                    .or_insert(OrderProceed::new(None));
                 let excuted_fund = float::to_decimal_with_json(&root["ef"])?;
-                let (avg, proceed, fee, cached_order) = if let Some(cached_order) = cached_order {
-                    // done, trade, cancel
-                    if excuted_fund != Decimal::ZERO {
-                        cached_order.excute_fund += excuted_fund;
-                        cached_order.excute_volume += float::to_decimal_with_json(&root["ev"])?;
-                        cached_order.fee += float::to_decimal_with_json(&root["pf"])?;
-                    }
-                    let avg = if cached_order.excute_volume != Decimal::ZERO {
-                        cached_order.excute_fund / cached_order.excute_volume
-                    } else {
-                        Decimal::ZERO
-                    };
-                    (
-                        avg,
-                        cached_order.excute_volume,
-                        cached_order.fee,
-                        Some(cached_order),
-                    )
-                } else if excuted_fund != Decimal::ZERO {
-                    // done
-                    let excuted_volume = float::to_decimal_with_json(&root["ev"])?;
-                    let excuted_fee = float::to_decimal_with_json(&root["pf"])?;
-                    (
-                        excuted_fund / excuted_volume,
-                        excuted_volume,
-                        excuted_fee,
-                        None,
-                    )
-                } else {
-                    // wait
-                    (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, None)
+                let avg = if excuted_fund != Decimal::ZERO {
+                    proceed.excute_fund += excuted_fund;
+                    proceed.excute_volume += float::to_decimal_with_json(&root["ev"])?;
+                    proceed.fee += float::to_decimal_with_json(&root["pf"])?;
+                    proceed.excute_fund / proceed.excute_volume
+                } else if proceed.excute_volume != Decimal::ZERO {
+                    proceed.excute_fund / proceed.excute_volume
+                }
+                else {
+                    Decimal::ZERO
                 };
 
                 let symbol = root["cd"].as_str().ok_or(anyhowln!("invalid code"))?;
                 let kind = MarketKind::Spot(symbol.to_string());
                 let time = Utc.timestamp_millis_opt(tiemstamp).unwrap();
-                let order = if let Some(cached_order) = cached_order {
-                    cached_order.order.ptime = PacketTime::from_sendtime(&time);
-                    cached_order.order.state = state;
-                    cached_order.order.avg = avg;
-                    cached_order.order.proceed = CurrencyPair::new_base(proceed);
-                    cached_order.order.fee = CurrencyPair::new_quote(fee);
-                    cached_order.order.updated = time;
-                    cached_order.order.detail = root.take();
-                    cached_order.order.clone()
+                let mut order = if let Some(order) = proceed.order.as_mut() {
+                    order.ptime = PacketTime::from_sendtime(&time);
+                    order.state = state;
+                    order.avg = avg;
+                    order.proceed = CurrencyPair::new_base(proceed.excute_volume);
+                    order.fee = CurrencyPair::new_quote(proceed.fee);
+                    order.updated = time;
+                    order.detail = root.take();
+                    order.clone()
+                } else if state == OrderState::PartiallyFilled {
+                    // trade일 때, wait를 먼저 받지 않으면 데이터를 신뢰하지 못함.
+                    // 주문 즉시, 체결될 때 wait없이 trade먼저 받을 수 있음.
+                    return Ok(SubscribeResult::None);
                 } else {
+                    // cancel, done, wait
                     let created = root["otms"]
                         .as_i64()
                         .ok_or(anyhowln!("invalid timestamp"))?;
@@ -924,22 +898,63 @@ impl WebsocketItf {
                         is_reduce: false,
                         state: state.clone(),
                         avg: avg,
-                        proceed: CurrencyPair::new_base(proceed),
-                        fee: CurrencyPair::new_quote(fee),
+                        proceed: CurrencyPair::new_base(proceed.excute_volume),
+                        fee: CurrencyPair::new_quote(proceed.fee),
                         created: Utc.timestamp_millis_opt(created).unwrap(),
                         detail: root.take(),
                     };
                     order
                 };
 
+                let remained_volume = float::to_decimal_with_json(&order.detail["rv"])?;
                 match &order.state {
                     OrderState::Opened => {
-                        cached_orders
-                            .insert(order.oid.to_string(), OrderProceed::new(order.clone()));
+                        proceed.order = Some(order.clone());
                     }
-                    OrderState::Filled | OrderState::Cancelled => {
+                    OrderState::Filled  => {
+                        // done일 때, remained_volume가 이상하게 나오는 문제로 인하여 별도 예외 처리리
+                        if order.proceed_real() != order.amount {
+                            if order.avg == Decimal::ZERO {
+                                cassry::error!(
+                                    "excute volume and avg are invaild: {} -> avg({}), proceed({})",
+                                    serde_json::to_string(&order)?,
+                                    order.price,
+                                    order.amount
+                                );
+                                order.avg = order.price;
+                            } else {
+                                cassry::error!(
+                                    "excute volume is invaild: {} -> proceed({})",
+                                    serde_json::to_string(&order)?,
+                                    order.amount
+                                );
+                            }
+                            order.proceed = CurrencyPair::new_base(order.amount);
+                        }
                         cached_orders.remove(&order.oid.to_string());
                     }
+                    OrderState::Cancelled=> {
+                        if order.proceed_real() + remained_volume != order.amount {
+                            if order.avg == Decimal::ZERO {
+                                cassry::error!(
+                                    "excute volume and avg are invaild: {} -> avg({}), proceed({})",
+                                    serde_json::to_string(&order)?,
+                                    order.price,
+                                    order.amount - remained_volume
+                                );
+                                order.avg = order.price;
+                            } else {
+                                cassry::error!(
+                                    "excute volume is invaild: {} -> proceed({})",
+                                    serde_json::to_string(&order)?,
+                                    order.amount - remained_volume
+                                );
+                            }
+                            order.proceed = CurrencyPair::new_base(order.amount - remained_volume);
+                        }
+                        cached_orders.remove(&order.oid.to_string());
+                    }
+                    
                     _ => {}
                 };
 
@@ -1104,61 +1119,66 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 .collect::<HashMap<_, _>>()
         };
 
-        // 빗썸 웹소켓 요청 형식: [{"ticket": "UUID"}, {"type": "...", "codes": [...], "format": "DEFAULT"}]
-        for (ty, vs) in s {
-            let param = match ty {
-                SubscribeType::Balance => json!({
-                    "type": "myAsset",
-                }),
-                SubscribeType::Position => {
-                    // 빗썸은 현물 거래만 지원하므로 포지션 없음
-                    return Err(anyhowln!("invalid position in bithumb"));
-                }
-                SubscribeType::Orderbook => {
-                    let symbols = vs
-                        .iter()
-                        .filter_map(|v| v["symbol"].as_str())
-                        .collect::<Vec<_>>();
+        // 빗썸 웹소켓 요청 형식: [{"ticket": "UUID"}, {"type": "...", "codes": [...]}, {"format": "DEFAULT"}]
+        let mut items = vec![json!({
+            "ticket": uuid::Uuid::new_v4().to_string(),
+        })];
+        let body = s
+            .iter()
+            .map(|(ty, vs)| {
+                let param = match ty {
+                    SubscribeType::Balance => json!({
+                        "type": "myAsset",
+                    }),
+                    SubscribeType::Position => {
+                        // 빗썸은 현물 거래만 지원하므로 포지션 없음
+                        return Err(anyhowln!("invalid position in bithumb"));
+                    }
+                    SubscribeType::Orderbook => {
+                        let symbols = vs
+                            .iter()
+                            .filter_map(|v| v["symbol"].as_str())
+                            .collect::<Vec<_>>();
 
-                    json!({
-                        "type": "orderbook",
-                        "codes": symbols,
-                    })
-                }
-                SubscribeType::Order => {
-                    let items = vs
-                        .iter()
-                        .map(|v| v["symbol"].as_str())
-                        .collect::<Option<Vec<_>>>()
-                        .ok_or(anyhowln!("invalid symbol in order"))?;
+                        json!({
+                            "type": "orderbook",
+                            "codes": symbols,
+                        })
+                    }
+                    SubscribeType::Order => {
+                        let items = vs
+                            .iter()
+                            .map(|v| v["symbol"].as_str())
+                            .collect::<Option<Vec<_>>>()
+                            .ok_or(anyhowln!("invalid symbol in order"))?;
 
-                    json!({
-                        "type": "myOrder",
-                        "codes": items,
-                    })
-                }
-                SubscribeType::PublicTrades => {
-                    let symbols = vs
-                        .iter()
-                        .filter_map(|v| v["symbol"].as_str())
-                        .collect::<Vec<_>>();
+                        json!({
+                            "type": "myOrder",
+                            "codes": items,
+                        })
+                    }
+                    SubscribeType::PublicTrades => {
+                        let symbols = vs
+                            .iter()
+                            .filter_map(|v| v["symbol"].as_str())
+                            .collect::<Vec<_>>();
 
-                    json!({
-                        "type": "trade",
-                        "codes": symbols,
-                    })
-                }
-            };
+                        json!({
+                            "type": "trade",
+                            "codes": symbols,
+                        })
+                    }
+                };
+                Ok(param)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        items.extend(body);
+        items.push(json!({
+            "format": "SIMPLE",
+        }));
 
-            let uuid = json!({
-                "ticket": uuid::Uuid::new_v4().to_string(),
-            });
-            let formatter = json!({
-                "format": "SIMPLE",
-            });
-            let request = serde_json::Value::Array(vec![uuid, param, formatter]);
-            client.send_text(request.to_string()).await?;
-        }
+        let request = serde_json::Value::Array(items);
+        client.send_text(request.to_string()).await?;
 
         Ok(())
     }
