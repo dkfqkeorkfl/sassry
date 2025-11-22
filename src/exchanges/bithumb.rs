@@ -631,7 +631,12 @@ impl exchange::RestApiTrait for RestAPI {
         };
 
         let str = json.to_string();
-        println!("bithumb response({:?}: {}): {}", status, ptime.laytency().as_seconds_f64(), str);
+        println!(
+            "bithumb response({:?}: {}): {}",
+            status,
+            ptime.laytency().as_seconds_f64(),
+            str
+        );
         if !status.is_success() {
             return Err(anyhowln!("bithumb API error: {}", str));
         }
@@ -1232,23 +1237,24 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         group: &String,
         _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<WebsocketParam> {
-        match group.as_str() {
-            "/v1/private" => {
-                let (_, jwt) = RestAPI::make_jwt(&ctx.param.key, &Default::default())?;
-                let mut param = WebsocketParam::default();
-                param.url = format!("{}{}", ctx.param.websocket.url, group);
-                param.header.insert(
-                    reqwest::header::AUTHORIZATION.to_string(),
-                    format!("Bearer {}", jwt),
-                );
-                Ok(param)
-            }
-            "/v1" => {
-                let mut param = WebsocketParam::default();
-                param.url = format!("{}{}", ctx.param.websocket.url, group);
-                Ok(param)
-            }
-            _ => Err(anyhowln!("invalid group: {}", group)),
+        if group == "/v1/private" {
+            let (_, jwt) = RestAPI::make_jwt(&ctx.param.key, &Default::default())?;
+            let mut param = WebsocketParam::default();
+            param.url = format!("{}{}", ctx.param.websocket.url, group);
+            param.header.insert(
+                reqwest::header::AUTHORIZATION.to_string(),
+                format!("Bearer {}", jwt),
+            );
+            Ok(param)
+        } else if let Some((path, _)) = group.split_once("?"){
+            let mut param = WebsocketParam::default();
+            param.url = format!("{}{}", ctx.param.websocket.url, path);
+            Ok(param)
+        }
+        else {
+            let mut param = WebsocketParam::default();
+            param.url = format!("{}{}", ctx.param.websocket.url, group);
+            Ok(param)
         }
     }
 
@@ -1266,9 +1272,15 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
             }
 
             SubscribeType::Orderbook | SubscribeType::PublicTrades => {
-                let symbol = param.value["market"].as_str()?;
-                let key = format!("{}{}", param.ty.clone() as u32, symbol);
-                Some(("/v1".to_string(), key)) // Public 웹소켓
+                let market = param.value["market"].as_str()?;
+                let key = format!("{}{}", param.ty.clone() as u32, market);
+                let symbol = param.value["symbol"].as_str()?;
+                if let Some((quote, _base)) = symbol.split_once("-") {
+                    let group = format!("/v1?{}", quote);
+                    Some((group, key))
+                } else {
+                    Some(("/v1".to_string(), key)) // Public 웹소켓
+                }
             }
         }
     }
