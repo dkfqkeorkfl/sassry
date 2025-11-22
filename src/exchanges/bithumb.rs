@@ -631,7 +631,7 @@ impl exchange::RestApiTrait for RestAPI {
         };
 
         let str = json.to_string();
-        println!("bithumb response({:?}): {}", status, str);
+        println!("bithumb response({:?}: {}): {}", status, ptime.laytency().as_seconds_f64(), str);
         if !status.is_success() {
             return Err(anyhowln!("bithumb API error: {}", str));
         }
