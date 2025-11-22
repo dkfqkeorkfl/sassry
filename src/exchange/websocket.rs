@@ -395,16 +395,24 @@ impl ExchangeSocket {
             .interface
             .make_group_and_key(&param)
             .await
-            .ok_or(anyhowln!("This is an unsupported feature."))?;
+            .ok_or(anyhowln!(
+                "This is an unsupported feature(ty:{:?}) : {}",
+                param.ty,
+                serde_json::to_string(&param.value)?
+            ))?;
 
         let mut subscribes = self.inner.subscribes.write().await;
         if subscribes.contains(&key) {
-            return Err(anyhowln!("already subscribed"));
+            return Err(anyhowln!(
+                "already subscribed(ty:{:?}) : {}",
+                param.ty,
+                serde_json::to_string(&param.value)?
+            ));
         }
 
         cassry::info!(
-            "proccessing subscribe :({}){}",
-            serde_json::to_string(&param.ty).unwrap(),
+            "proccessing subscribe({:?}) : {}",
+            param.ty,
             serde_json::to_string(&param.value).unwrap()
         );
 

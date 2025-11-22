@@ -51,14 +51,18 @@ impl Default for RestAPI {
             ),
             TickRange(
                 float::to_decimal("50000").unwrap(),
-                float::to_decimal("100").unwrap(),
+                float::to_decimal("50").unwrap(),
             ),
             TickRange(
                 float::to_decimal("100000").unwrap(),
-                float::to_decimal("500").unwrap(),
+                float::to_decimal("100").unwrap(),
             ),
             TickRange(
                 float::to_decimal("500000").unwrap(),
+                float::to_decimal("500").unwrap(),
+            ),
+            TickRange(
+                float::to_decimal("1000000").unwrap(),
                 float::to_decimal("1000").unwrap(),
             ),
         ];
