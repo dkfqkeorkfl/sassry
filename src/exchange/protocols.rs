@@ -79,6 +79,15 @@ pub enum OrderBookSide {
     Ask,
 }
 
+impl OrderBookSide {
+    pub fn opposite(&self) -> Self {
+        match self {
+            OrderBookSide::Bid => OrderBookSide::Ask,
+            OrderBookSide::Ask => OrderBookSide::Bid,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
 pub enum OrderSide {
     Buy,
@@ -87,6 +96,13 @@ pub enum OrderSide {
 }
 
 impl OrderSide {
+    pub fn opposite(&self) -> Self {
+        match self {
+            OrderSide::Buy => OrderSide::Sell,
+            OrderSide::Sell => OrderSide::Buy,
+        }
+    }
+
     pub fn is_buy(&self) -> bool {
         match self {
             OrderSide::Buy => true,
