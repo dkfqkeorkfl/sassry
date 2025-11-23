@@ -655,11 +655,11 @@ impl exchange::RestApiTrait for RestAPI {
             json
         } else {
             
-            return Err(anyhowln!("[bithumb] failed to parse response : {}", text));
+            return Err(anyhowln!("[bithumb] failed to parse response({:?}) : {}", status, text));
         };
 
         if !status.is_success() {
-            return Err(anyhowln!("[bithumb] API error : {}", text));
+            return Err(anyhowln!("[bithumb] API error({:?}) : {}", status, text));
         }
 
         Ok((json, ptime))
