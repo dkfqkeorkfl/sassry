@@ -388,6 +388,22 @@ impl exchange::RestApiTrait for RestAPI {
                     ret.success.insert_raw(order);
                 }
                 Err(e) => {
+                    let text = e.to_string();
+                    let re = regex::Regex::new(r"제출된 주문ID: \[(.*?)\]").unwrap();
+                    if let Some(caps) = re.captures(&text) {
+                        cassry::error!("[bithumb] Forced cancellation : {}", text);
+                        let mut os = OrderSet::new(
+                            util::get_epoch_first().into(),
+                            MarketVal::Pointer(market.clone()),
+                        );
+
+                        let order_id = &caps[1];
+                        let mut order = Order::from_order_param(param);
+                        order.oid = order_id.to_string();
+                        os.insert_raw(order);
+                        self.request_order_cancel(context, &os).await?;
+                    }
+                
                     ret.errors.insert(i.to_string(), e);
                 }
             }
@@ -638,6 +654,7 @@ impl exchange::RestApiTrait for RestAPI {
         let json = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
             json
         } else {
+            
             return Err(anyhowln!("[bithumb] failed to parse response : {}", text));
         };
 
@@ -694,6 +711,7 @@ impl exchange::RestApiTrait for RestAPI {
 
             symbols.push("KRW-WLD".to_string());
             symbols.push("USDT-WLD".to_string());
+            symbols.push("KRW-APM".to_string());
             symbols
         };
 
