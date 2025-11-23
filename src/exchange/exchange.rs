@@ -340,8 +340,7 @@ impl Exchange {
 
                     if let SubscribeResult::Err(e) = &subsicrebe {
                         cassry::error!("SubscribeResult::Err : {}", e.to_string());
-                    }
-                    else if let SubscribeResult::Authorized(success) = &subsicrebe {
+                    } else if let SubscribeResult::Authorized(success) = &subsicrebe {
                         if *success {
                             is_connected
                                 .set_flag(ExchangeCreateOpt::CheckAuth, true)
@@ -442,17 +441,16 @@ impl Exchange {
 
     pub async fn request_wallet(&self, optional: &str) -> anyhow::Result<DataSet<Asset>> {
         let sparam = SubscribeParam::balance().build();
+        let can_takeout = if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
+            if !is_subscribed {
+                self.websocket.subscribe(sparam).await?;
+            }
+            self.websocket.is_connected_all().await && is_subscribed
+        } else {
+            false
+        };
 
-        let (is_subscribed, need_subscribe) =
-            if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
-                (
-                    self.websocket.is_connected_all().await && is_subscribed,
-                    !is_subscribed,
-                )
-            } else {
-                (false, false)
-            };
-        let ret = if is_subscribed {
+        let ret = if can_takeout {
             let locked = self.get_storage().assets.read().await;
             cassry::debug!(
                 "imported asset from storage : date({}), laytency({})",
@@ -465,10 +463,6 @@ impl Exchange {
             ret
         };
 
-        if need_subscribe {
-            self.websocket.subscribe(sparam).await?;
-        }
-
         Ok(ret)
     }
 
@@ -477,18 +471,21 @@ impl Exchange {
         market: &MarketPtr,
     ) -> anyhow::Result<HashMap<MarketKind, PositionSet>> {
         let sparam = SubscribeParam::position().market(market.clone()).build();
-        let (is_subscribed, need_subscribe, is_support) =
+        let (can_takeout, can_cache) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
+                if !is_subscribed {
+                    self.websocket.subscribe(sparam).await?;
+                }
+
                 (
                     self.websocket.is_connected_all().await && is_subscribed,
-                    !is_subscribed,
                     true,
                 )
             } else {
-                (false, false, false)
+                (false, false)
             };
 
-        let imported_ret = if is_subscribed {
+        let imported_ret = if can_takeout {
             let locked = self.get_storage().positions.read().await;
             if let Some(value) = locked.get(&market.kind) {
                 cassry::debug!(
@@ -514,7 +511,7 @@ impl Exchange {
             anyhow::Result::Err(mut imported) => {
                 let mut ret = self.restapi.request_position(&self.context, market).await?;
 
-                if is_support {
+                if can_cache {
                     if !ret.contains_key(&market.kind) {
                         ret.insert(
                             market.kind.clone(),
@@ -539,10 +536,6 @@ impl Exchange {
             }
         };
 
-        if need_subscribe {
-            self.websocket.subscribe(sparam).await?;
-        }
-
         Ok(ret)
     }
 
@@ -557,25 +550,20 @@ impl Exchange {
             .speed(SubscribeSpeed::Fastest)
             .build();
 
-        let (is_subscribed, need_subscribe, _is_support) =
-            if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
-                (
-                    self.websocket.is_connected_all().await && is_subscribed,
-                    !is_subscribed,
-                    true,
-                )
-            } else {
-                (false, false, false)
-            };
+        let can_takeout = if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
+            if !is_subscribed {
+                self.websocket.subscribe(sparam).await?;
+            }
+            self.websocket.is_connected_all().await && is_subscribed
+        } else {
+            false
+        };
 
-        let ret = if is_subscribed {
+        let ret = if can_takeout {
             let locked = self.context.storage.orderbook.read().await;
             if let Some(orderbook) = locked.get(&market.kind).cloned() {
                 Some(orderbook)
             } else {
-                let keys = locked.values().collect::<Vec<_>>();
-                let str = serde_json::to_string(&keys)?;
-                println!("{}", str);
                 None
             }
         } else {
@@ -599,9 +587,6 @@ impl Exchange {
             Arc::new(data)
         };
 
-        if need_subscribe {
-            self.websocket.subscribe(sparam).await?;
-        }
         Ok(ptr)
     }
     pub async fn request_order_submit(
@@ -610,18 +595,19 @@ impl Exchange {
         params: &[OrderParam],
     ) -> anyhow::Result<OrderResult> {
         if params.is_empty() {
-            return Err(anyhowln!("param is empty"));
-        }
-
-        let sparam = SubscribeParam::order().market(market.clone()).build();
-        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
-            self.websocket.subscribe(sparam).await?;
+            return Err(anyhowln!("params is empty"));
         }
 
         let ret = self
             .restapi
             .request_order_submit(&self.context, market, params)
             .await?;
+
+        // 우선 주문 먼저 요청넣도록
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
+            self.websocket.subscribe(sparam).await?;
+        }
         Ok(ret)
     }
 
@@ -631,18 +617,19 @@ impl Exchange {
         params: &[(OrderPtr, AmendParam)],
     ) -> anyhow::Result<OrderResult> {
         if params.is_empty() {
-            return Err(anyhowln!("param is empty"));
-        }
-
-        let sparam = SubscribeParam::order().market(market.clone()).build();
-        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
-            self.websocket.subscribe(sparam).await?;
+            return Err(anyhowln!("params is empty"));
         }
 
         let ret = self
             .restapi
             .request_order_amend(&self.context, market, params)
             .await?;
+
+        // 우선 주문 업데이트 먼저 요청넣도록
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
+            self.websocket.subscribe(sparam).await?;
+        }
         Ok(ret)
     }
 
@@ -677,15 +664,6 @@ impl Exchange {
     }
 
     pub async fn request_order_cancel(&self, params: &OrderSet) -> anyhow::Result<OrderResult> {
-        let market = params
-            .market_ptr()
-            .ok_or(anyhowln!("the market of order must be point type"))
-            .cloned()?;
-        let sparam = SubscribeParam::order().market(market.clone()).build();
-        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
-            self.websocket.subscribe(sparam).await?;
-        }
-
         let (mut restapi_param, already_synced) =
             params.filter_new(|(_key, value)| value.state.cancelable());
         if restapi_param.get_datas().is_empty() {
@@ -704,10 +682,23 @@ impl Exchange {
             ret.success.insert_with_key(key, value);
         }
 
+        // 우선 취소먼저 요청넣도록
+        let market = params
+            .market_ptr()
+            .ok_or(anyhowln!("the market of order must be point type"))
+            .cloned()?;
+        let sparam = SubscribeParam::order().market(market.clone()).build();
+        if !self.websocket.is_subscribed(&sparam).await.unwrap_or(true) {
+            self.websocket.subscribe(sparam).await?;
+        }
+
         Ok(ret)
     }
 
     pub async fn request_order_query(&self, params: &OrderSet) -> anyhow::Result<OrderResult> {
+        if params.get_datas().is_empty() {
+            return Err(anyhowln!("params is empty"));
+        }
         // order subscribe 호출
         let market = params
             .market_ptr()
@@ -715,21 +706,24 @@ impl Exchange {
             .ok_or(anyhowln!("the market of order must be point type"))?;
         let sparam = SubscribeParam::order().market(market.clone()).build();
 
-        let (is_subscribed, need_subscribe, is_support) =
+        let (can_takeout, can_cache) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
+                if !is_subscribed {
+                    self.websocket.subscribe(sparam).await?;
+                }
+
                 (
                     self.websocket.is_connected_all().await && is_subscribed,
-                    !is_subscribed,
                     true,
                 )
             } else {
-                (false, false, false)
+                (false, false)
             };
 
         let (mut restapi_param, mut already_synced) =
             params.filter_new(|(_key, value)| value.state.synchronizable());
 
-        if is_subscribed {
+        if can_takeout {
             let mut remover = Vec::<String>::default();
             for oid in restapi_param.get_datas().keys() {
                 let result = self.context.find_order(&oid, &market.kind).await?;
@@ -753,7 +747,7 @@ impl Exchange {
                 .request_order_query(&self.context, &restapi_param)
                 .await?;
 
-            if is_support {
+            if can_cache {
                 let sb = HashMap::<MarketKind, OrderSet>::from([(
                     market.kind.clone(),
                     ret.success.clone(),
@@ -798,9 +792,6 @@ impl Exchange {
             }
         }
 
-        if need_subscribe {
-            self.websocket.subscribe(sparam).await?;
-        }
         Ok(ret)
     }
 }
