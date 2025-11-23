@@ -627,22 +627,22 @@ impl exchange::RestApiTrait for RestAPI {
     ) -> anyhow::Result<(serde_json::Value, PacketTime)> {
         let (packet, ptime) = self.req_async(context, param).await?;
         let status = packet.status();
-        let json = match packet.json::<serde_json::Value>().await {
-            Ok(json) => json,
-            Err(e) => {
-                return Err(anyhowln!("failed to parse response: {}", e));
-            }
-        };
-
-        let str = json.to_string();
+        let text = packet.text().await?;
         println!(
-            "bithumb response({:?}: {}): {}",
+            "[bithumb] response({:?} : {}): {}",
             status,
             ptime.laytency().as_seconds_f64(),
-            str
+            text
         );
+
+        let json = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+            json
+        } else {
+            return Err(anyhowln!("[bithumb] failed to parse response : {}", text));
+        };
+
         if !status.is_success() {
-            return Err(anyhowln!("bithumb API error: {}", str));
+            return Err(anyhowln!("[bithumb] API error : {}", text));
         }
 
         Ok((json, ptime))
@@ -1250,12 +1250,11 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 format!("Bearer {}", jwt),
             );
             Ok(param)
-        } else if let Some((path, _)) = group.split_once("?"){
+        } else if let Some((path, _)) = group.split_once("?") {
             let mut param = WebsocketParam::default();
             param.url = format!("{}{}", ctx.param.websocket.url, path);
             Ok(param)
-        }
-        else {
+        } else {
             let mut param = WebsocketParam::default();
             param.url = format!("{}{}", ctx.param.websocket.url, group);
             Ok(param)
