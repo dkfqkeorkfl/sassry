@@ -406,9 +406,12 @@ impl PrecisionKind {
             PrecisionKind::Tick(tick) => {
                 PrecisionKind::calculate_with_tick(amount, &OrderBookSide::Bid, lvl, tick)
             }
-            PrecisionKind::RangeTick(ranges) => {
-                PrecisionKind::calculate_with_range(amount, &OrderBookSide::Bid, lvl, ranges.as_ref())
-            }
+            PrecisionKind::RangeTick(ranges) => PrecisionKind::calculate_with_range(
+                amount,
+                &OrderBookSide::Bid,
+                lvl,
+                ranges.as_ref(),
+            ),
         }
     }
 }
@@ -1197,10 +1200,10 @@ impl OrderBook {
     pub async fn consume(
         &self,
         side: &OrderBookSide,
-        mut remains: Vec<Decimal>,
-        normalize: &str,
+        mut remains: VecDeque<Decimal>,
+        unit: &CurrencySide,
     ) -> anyhow::Result<Vec<(usize, Decimal)>> {
-        let mut ret = Vec::<(usize, Decimal)>::default();
+        let mut ret = Vec::<(usize, Decimal)>::with_capacity(remains.len());
         let quotes = if *side == OrderBookSide::Ask {
             &self.ask
         } else {
@@ -1209,42 +1212,41 @@ impl OrderBook {
 
         let mut acc = Decimal::ZERO;
         let mut total = Decimal::ZERO;
-        for i in 0..quotes.len() {
+        for (i, (price_raw, amount_raw)) in quotes.iter().enumerate().map(|(i, q)| (i, q.as_ref()))
+        {
             if remains.len() == 0 {
                 break;
             }
 
-            let (price_raw, amount_raw) = quotes[i].as_ref();
             let price = price_raw.number().await?;
-            let mut amount = if normalize.is_empty() {
-                amount_raw.number().await?
-            } else {
-                let n = meval::eval_str(normalize.replace("amount", amount_raw.string()))?;
-                let amount = Decimal::from_f64(n).ok_or(anyhowln!(
-                    "occur error(convert f64 to decimal) in orderbook:consume"
-                ))?;
-                amount
-            };
+            let mut amount = match unit {
+                CurrencySide::None => Err(anyhowln!("unit is none, it's not allowed")),
+                CurrencySide::Quote => Ok(price * amount_raw.number().await?),
+                CurrencySide::Base => amount_raw.number().await,
+                CurrencySide::Specific(formula) => {
+                    let n = meval::eval_str(formula.replace("amount", amount_raw.string()))?;
+                    Decimal::from_f64(n).ok_or(anyhowln!("occur error(convert f64 to decimal)"))
+                }
+            }?;
 
             loop {
-                if let Some(mut remain) =
-                    remains.get(0).filter(|_v| amount != Decimal::ZERO).cloned()
-                {
-                    let min = remain.clone().min(amount.clone());
-                    amount -= min;
-                    remain -= min;
-                    acc += price * min;
-                    total += min;
-                    if remain == Decimal::ZERO {
-                        ret.push((i, acc / total));
-                        remains.remove(0);
-                        acc = Decimal::ZERO;
-                        total = Decimal::ZERO;
+                let completed =
+                    if let Some(remain) = remains.front_mut().filter(|_v| !amount.is_zero()) {
+                        let min = amount.min(*remain);
+                        amount -= min;
+                        *remain -= min;
+                        acc += price * min;
+                        total += min;
+                        remain.is_zero()
                     } else {
-                        remains[0] = remain;
-                    }
-                } else {
-                    break;
+                        break;
+                    };
+
+                if completed {
+                    remains.pop_front();
+                    ret.push((i, acc / total));
+                    acc = Decimal::ZERO;
+                    total = Decimal::ZERO;
                 }
             }
         }
