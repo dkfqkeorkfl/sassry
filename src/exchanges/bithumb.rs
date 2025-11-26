@@ -403,7 +403,7 @@ impl exchange::RestApiTrait for RestAPI {
                         os.insert_raw(order);
                         self.request_order_cancel(context, &os).await?;
                     }
-                
+
                     ret.errors.insert(i.to_string(), e);
                 }
             }
@@ -542,26 +542,32 @@ impl exchange::RestApiTrait for RestAPI {
             .and_then(|s| Utc.timestamp_millis_opt(s).single())
             .ok_or(anyhowln!("invalid timestamp"))?;
         let mut orderbook = OrderBook::new(packettime, MarketVal::Pointer(market.clone()), time);
-        for obj in root["orderbook_units"]
+        for item in root["orderbook_units"]
             .as_array()
             .ok_or(anyhowln!("invalid orderbook_units"))?
         {
-            let ask_price = &obj["ask_price"];
-            let bid_price = &obj["bid_price"];
+            let obj = item.as_object().ok_or(anyhowln!("invalid object"))?;
+            if let Some(sz) = obj
+                        .get("ask_size")
+                        .map(|v| v.to_string())
+                        .filter(|sz| *sz != "0")
+                    {
+                        orderbook.ask.push(Arc::new((
+                            LazyDecimal::from(obj["ask_price"].to_string()),
+                            LazyDecimal::from(sz),
+                        )));
+                    }
 
-            if !ask_price.is_null() {
-                orderbook.ask.push(Arc::new((
-                    LazyDecimal::from(ask_price.to_string()),
-                    LazyDecimal::from(obj["ask_size"].to_string()),
-                )));
-            }
-
-            if !bid_price.is_null() {
-                orderbook.bid.push(Arc::new((
-                    LazyDecimal::from(bid_price.to_string()),
-                    LazyDecimal::from(obj["bid_size"].to_string()),
-                )));
-            }
+                    if let Some(sz) = obj
+                        .get("bid_size")
+                        .map(|v| v.to_string())
+                        .filter(|sz| *sz != "0")
+                    {
+                        orderbook.bid.push(Arc::new((
+                            LazyDecimal::from(obj["bid_price"].to_string()),
+                            LazyDecimal::from(sz),
+                        )));
+                    }
         }
 
         orderbook.detail = root.clone();
@@ -654,8 +660,11 @@ impl exchange::RestApiTrait for RestAPI {
         let json = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
             json
         } else {
-            
-            return Err(anyhowln!("[bithumb] failed to parse response({:?}) : {}", status, text));
+            return Err(anyhowln!(
+                "[bithumb] failed to parse response({:?}) : {}",
+                status,
+                text
+            ));
         };
 
         if !status.is_success() {
@@ -1026,23 +1035,29 @@ impl WebsocketItf {
                 );
 
                 for item in root["obu"]
-                    .as_array_mut()
+                    .as_array()
                     .ok_or(anyhowln!("invalid orderbook_units"))?
                 {
-                    let ask_price = &item["ap"];
-                    let bid_price = &item["bp"];
-
-                    if !ask_price.is_null() {
+                    let obj = item.as_object().ok_or(anyhowln!("invalid object"))?;
+                    if let Some(sz) = obj
+                        .get("as")
+                        .map(|v| v.to_string())
+                        .filter(|sz| *sz != "0.0")
+                    {
                         orderbook.ask.push(Arc::new((
-                            LazyDecimal::from(ask_price.to_string()),
-                            LazyDecimal::from(item["as"].to_string()),
+                            LazyDecimal::from(obj["ap"].to_string()),
+                            LazyDecimal::from(sz),
                         )));
                     }
 
-                    if !bid_price.is_null() {
+                    if let Some(sz) = obj
+                        .get("bs")
+                        .map(|v| v.to_string())
+                        .filter(|sz| *sz != "0.0")
+                    {
                         orderbook.bid.push(Arc::new((
-                            LazyDecimal::from(bid_price.to_string()),
-                            LazyDecimal::from(item["bs"].to_string()),
+                            LazyDecimal::from(obj["bp"].to_string()),
+                            LazyDecimal::from(sz),
                         )));
                     }
                 }
