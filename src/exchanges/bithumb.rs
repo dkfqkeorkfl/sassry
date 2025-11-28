@@ -718,8 +718,6 @@ impl exchange::RestApiTrait for RestAPI {
                 })
                 .ok_or(anyhowln!("invalid market response format"))?;
 
-            symbols.push("KRW-WLD".to_string());
-            symbols.push("USDT-WLD".to_string());
             symbols.push("KRW-APM".to_string());
             symbols
         };
