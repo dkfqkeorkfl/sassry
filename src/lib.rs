@@ -17,3 +17,4 @@ pub use meval;
 pub use rand;
 pub use oauth2;
 pub use uuid;
+pub use cassry_derive::ErrCode;

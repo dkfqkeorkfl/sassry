@@ -12,7 +12,6 @@ use cassry::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::Arc;
-use thiserror::Error;
 use uuid::Uuid;
 
 use tokio::sync::RwLock;
@@ -36,41 +35,38 @@ use tokio::sync::RwLock;
 //     }
 // }
 
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error, cassry_derive::ErrCode)]
 pub enum ClaimsError {
+    #[status(401)]
+    #[value(1001)]
     #[error("Missing cookie header")]
     MissingCookieHeader,
 
+    #[status(401)]
+    #[value(1002)]
     #[error("Missing JWT token in cookies")]
     MissingJwtToken,
 
+    #[status(401)]
+    #[value(1003)]
     #[error("JWT verification failed: {0}")]
     InvalidJwt(String),
 
-    #[error("Internal server error")]
-    Internal(anyhow::Error),
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error), // 500: 서버 내부 오류
 }
 
 impl IntoResponse for ClaimsError {
     fn into_response(self) -> Response {
-        match &self {
-            ClaimsError::MissingCookieHeader | ClaimsError::MissingJwtToken => {
-                debug!("Claims error: {}", self);
-                (StatusCode::UNAUTHORIZED, self.to_string()).into_response()
-            }
-
-            ClaimsError::InvalidJwt(err) => {
-                debug!("{} : {}", self, err);
-                (StatusCode::UNAUTHORIZED, err.to_string()).into_response()
-            }
-
-            ClaimsError::Internal(err) => {
-                warn!("Claims internal error: {:?}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error".to_string(),
-                )
-                    .into_response()
+        let (code, value) = self.to_response();
+        match StatusCode::from_u16(code) {
+            Ok(status) => (status, axum::Json(value)).into_response(),
+            Err(errcode) => {
+                let (_, err) =
+                    ClaimsError::Internal(anyhow::anyhow!("Invalid status code({:?})", errcode))
+                        .to_response();
+                warn!("Invalid status code: {:?}", errcode);
+                (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response()
             }
         }
     }
@@ -157,7 +153,7 @@ where
                 .ok_or(ClaimsError::MissingCookieHeader)?;
             let cookie = cookies
                 .get(AccessIssuer::get_cookie_name())
-                .ok_or(ClaimsError::MissingCookieHeader)?;
+                .ok_or(ClaimsError::MissingJwtToken)?;
             let jwt_manager = parts
                 .extensions
                 .get::<Arc<AccessIssuer>>()
