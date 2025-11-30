@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use super::error::HttpError;
 use cassry::{
     chrono::Utc,
     ring::hmac,
@@ -34,43 +35,6 @@ use tokio::sync::RwLock;
 //         TokenType::None
 //     }
 // }
-
-#[derive(Debug, thiserror::Error, cassry_derive::ErrCode)]
-pub enum ClaimsError {
-    #[status(401)]
-    #[value(1001)]
-    #[error("Missing cookie header")]
-    MissingCookieHeader,
-
-    #[status(401)]
-    #[value(1002)]
-    #[error("Missing JWT token in cookies")]
-    MissingJwtToken,
-
-    #[status(401)]
-    #[value(1003)]
-    #[error("JWT verification failed: {0}")]
-    InvalidJwt(String),
-
-    #[error(transparent)]
-    Internal(#[from] anyhow::Error), // 500: 서버 내부 오류
-}
-
-impl IntoResponse for ClaimsError {
-    fn into_response(self) -> Response {
-        let (code, value) = self.to_response();
-        match StatusCode::from_u16(code) {
-            Ok(status) => (status, axum::Json(value)).into_response(),
-            Err(errcode) => {
-                let (_, err) =
-                    ClaimsError::Internal(anyhow::anyhow!("Invalid status code({:?})", errcode))
-                        .to_response();
-                warn!("Invalid status code: {:?}", errcode);
-                (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response()
-            }
-        }
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SocketClaims {
@@ -140,42 +104,45 @@ impl<S> FromRequestParts<S> for AccessClaims
 where
     S: Send + Sync,
 {
-    type Rejection = ClaimsError;
+    type Rejection = HttpError;
 
     fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
         async move {
-            let cookies = parts
+            let cookie = parts
                 .extensions
                 .get::<tower_cookies::Cookies>()
-                .ok_or(ClaimsError::MissingCookieHeader)?;
-            let cookie = cookies
-                .get(AccessIssuer::get_cookie_name())
-                .ok_or(ClaimsError::MissingJwtToken)?;
-            let jwt_manager = parts
-                .extensions
-                .get::<Arc<AccessIssuer>>()
-                .ok_or_else(|| ClaimsError::Internal(anyhow::anyhow!("JwtManager not found")))?;
+                .and_then(|cookies| cookies.get(AccessIssuer::get_cookie_name()))
+                .ok_or(HttpError::MissingJwtToken)?;
+            let jwt_manager =
+                parts
+                    .extensions
+                    .get::<Arc<AccessIssuer>>()
+                    .ok_or(anyhow::anyhow!("JwtManager not found"))?;
 
-            let cookie_value = cookie.value();
+            let mut validation = Validation::default();
+            validation.validate_exp = false;
             let claims = jwt_manager
-                .verify_jwt(&cookie_value, None)
+                .verify_jwt(&cookie.value(), Some(validation))
                 .await
-                .map_err(|e| ClaimsError::InvalidJwt(e.to_string()))?;
-
+                .map_err(|e| HttpError::InvalidJwt(e))?;
+            if chrono::Utc::now().timestamp() > claims.exp {
+                return Err(HttpError::ExpiredJwt);
+            }
+            
             let session = parts
                 .extensions
                 .get::<tower_sessions::Session>()
-                .ok_or(ClaimsError::Internal(anyhow::anyhow!("session not found")))?;
+                .ok_or(anyhow::anyhow!("session not found"))?;
             let sub = session
                 .get::<u64>(AccessIssuer::get_session_sub_name())
                 .await
-                .map_err(|e| ClaimsError::Internal(e.into()))?
+                .map_err(anyhow::Error::from)?
                 .filter(|sub| claims.sub == *sub);
             if sub.is_none() {
-                return Err(ClaimsError::InvalidJwt("sub not match".to_string()));
+                return Err(HttpError::InvalidJwt(anyhow::anyhow!("sub not match")));
             }
 
             Ok(claims)
