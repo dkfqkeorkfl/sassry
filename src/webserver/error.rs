@@ -83,7 +83,7 @@ pub enum HttpError {
 
 impl axum::response::IntoResponse for HttpError {
     fn into_response(self) -> axum::response::Response {
-        let (code, value) = self.to_response();
+        let (code, value) = self.as_response();
         match StatusCode::from_u16(code) {
             Ok(status) => (status, axum::Json(value)).into_response(),
             Err(code) => {
@@ -93,7 +93,7 @@ impl axum::response::IntoResponse for HttpError {
                     code,
                     str
                 ))
-                .to_response();
+                .as_response();
                 warn!("Invalid status code({:?}) : {}", code, str);
                 (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response()
             }
