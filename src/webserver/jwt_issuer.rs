@@ -270,7 +270,7 @@ impl AccessIssuer {
         access_claims: &AccessClaims,
     ) -> anyhow::Result<(AccessClaims, RefreshClaims)> {
         if access_claims.from != refresh_clams.jti || access_claims.sub != refresh_clams.sub {
-            return Err(anyhow::anyhow!("Invalid refresh token"));
+            return Err(anyhow::anyhow!("Invalid refresh token: from={}, sub={}", access_claims.from, access_claims.sub));
         }
 
         let now = Utc::now();
