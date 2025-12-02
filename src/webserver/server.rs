@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    http::{StatusCode, Uri},
+    http::{StatusCode, Uri}, response::IntoResponse,
 };
 
 use axum_extra::extract::Host;
@@ -10,6 +10,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use cassry::*;
+use tower::{Layer, Service};
+use axum::response::Response;
+use axum::http::Request;
 // https://www.runit.cloud/2020/04/https-ssl.html
 
 pub struct Param {
@@ -24,11 +27,86 @@ pub struct Param {
     pub ping_interval: chrono::Duration,
 }
 
+// StatusCode가 200이 아닐 때 로깅하는 레이어
+#[derive(Clone)]
+pub struct Non200StatusLoggingLayer;
+
+impl<S> Layer<S> for Non200StatusLoggingLayer {
+    type Service = Non200StatusLoggingService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        Non200StatusLoggingService {
+            inner: std::sync::Arc::new(tokio::sync::Mutex::new(inner)),
+        }
+    }
+}
+
+pub struct Non200StatusLoggingService<S> {
+    inner: std::sync::Arc<tokio::sync::Mutex<S>>,
+}
+
+impl<S> Clone for Non200StatusLoggingService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<S, B> Service<Request<B>> for Non200StatusLoggingService<S>
+where
+    S: Service<Request<B>, Response = Response> + Send + 'static,
+    S::Future: Send + 'static,
+    B: Send + 'static,
+{
+    type Response = Response;
+    type Error = S::Error;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        // 이 레이어는 단순히 로깅만 하므로 항상 준비되어 있다고 가정
+        // 실제 poll_ready 체크는 call에서 내부 서비스를 호출할 때 수행됨
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<B>) -> Self::Future {
+        let path = req.uri().path().to_string();
+        let method = req.method().clone();
+        let inner = self.inner.clone();
+        
+        Box::pin(async move {
+            let mut inner_guard = inner.lock().await;
+            let response = inner_guard.call(req).await?;
+            let status = response.status();
+            
+            if status != StatusCode::OK {
+                error!(
+                    "Non-200 status code: {} {} -> {}",
+                    method,
+                    path,
+                    status.as_u16()
+                );
+            }
+            
+            Ok(response)
+        })
+    }
+}
+
 pub struct Server {
     config: Arc<Param>,
 }
 
 impl Server {
+    fn get_config(&self) -> Arc<Param> {
+        self.config.clone()
+    }
+    
     async fn redirect_http_to_https(ports: Arc<Param>) -> anyhow::Result<()> {
         fn make_https(host: String, uri: Uri, ports: Arc<Param>) -> anyhow::Result<Uri> {
             let mut parts = uri.into_parts();

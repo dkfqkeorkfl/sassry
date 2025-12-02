@@ -94,7 +94,7 @@ impl axum::response::IntoResponse for HttpError {
                     str
                 ))
                 .as_response();
-                warn!("Invalid status code({:?}) : {}", code, str);
+                error!("Invalid status code({:?}) : {}", code, str);
                 (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response()
             }
         }
