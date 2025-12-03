@@ -131,19 +131,6 @@ where
             if chrono::Utc::now().timestamp() > claims.exp {
                 return Err(HttpError::ExpiredJwt);
             }
-            
-            let session = parts
-                .extensions
-                .get::<tower_sessions::Session>()
-                .ok_or(anyhow::anyhow!("session not found"))?;
-            let sub = session
-                .get::<u64>(AccessIssuer::get_session_sub_name())
-                .await
-                .map_err(anyhow::Error::from)?
-                .filter(|sub| claims.sub == *sub);
-            if sub.is_none() {
-                return Err(HttpError::InvalidJwt(anyhow::anyhow!("sub not match")));
-            }
 
             Ok(claims)
         }
