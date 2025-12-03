@@ -1,9 +1,9 @@
+use super::error::HttpError;
 use axum::{
     extract::FromRequestParts,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use super::error::HttpError;
 use cassry::{
     chrono::Utc,
     ring::hmac,
@@ -116,11 +116,10 @@ where
                 .get::<tower_cookies::Cookies>()
                 .and_then(|cookies| cookies.get(AccessIssuer::get_cookie_name()))
                 .ok_or(HttpError::MissingJwtToken)?;
-            let jwt_manager =
-                parts
-                    .extensions
-                    .get::<Arc<AccessIssuer>>()
-                    .ok_or(anyhow::anyhow!("JwtManager not found"))?;
+            let jwt_manager = parts
+                .extensions
+                .get::<Arc<AccessIssuer>>()
+                .ok_or(anyhow::anyhow!("JwtManager not found"))?;
 
             let mut validation = Validation::default();
             validation.validate_exp = false;
@@ -184,6 +183,13 @@ pub struct AccessIssuer {
 }
 
 impl AccessIssuer {
+    pub fn get_access_ttl(&self) -> &chrono::Duration {
+        &self.access_ttl
+    }
+    pub fn get_refresh_ttl(&self) -> &chrono::Duration {
+        &self.refresh_ttl
+    }
+
     pub const fn get_cookie_name() -> &'static str {
         "access"
     }
@@ -257,7 +263,11 @@ impl AccessIssuer {
         access_claims: &AccessClaims,
     ) -> anyhow::Result<(AccessClaims, RefreshClaims)> {
         if access_claims.from != refresh_clams.jti || access_claims.sub != refresh_clams.sub {
-            return Err(anyhow::anyhow!("Invalid refresh token: from={}, sub={}", access_claims.from, access_claims.sub));
+            return Err(anyhow::anyhow!(
+                "Invalid refresh token: from={}, sub={}",
+                access_claims.from,
+                access_claims.sub
+            ));
         }
 
         let now = Utc::now();
