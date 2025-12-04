@@ -1,6 +1,5 @@
 use axum::{
-    extract::State,
-    http::{StatusCode, Uri}, response::IntoResponse,
+    ServiceExt, extract::State, http::{StatusCode, Uri}, response::IntoResponse
 };
 
 use axum_extra::extract::Host;
@@ -153,8 +152,8 @@ impl Server {
             .rate_limit(10, std::time::Duration::from_secs(1)) // 초당 10 요청
             .timeout(std::time::Duration::from_secs(5))
             .load_shed()
-            .service(router.into_make_service());
-
+            .service(router.into_make_service_with_connect_info::<SocketAddr>());
+        
         let config = Arc::new(param);
         let addr = SocketAddr::new(config.addr.clone(), config.https_port.clone());
         let cloned_addr = addr.clone();
