@@ -16,41 +16,44 @@ before-build = true
 cassry = { path = "../cassry" }
 cassry-derive = { path = "../cassry/derive" }
 
+# below are dependencies should be imported each project
+serde = { version = "1", features = ["derive", "rc"] }
+serde_with = "3"
+thiserror = "2"
+
 # tags
-serde = { version = "1.0.219", features = ["derive", "rc"] }
-serde_with = "3.12.0"
-derive_more = { version = "2.0.1", features = ["full"] }
-async-trait = "0.1.87"
+async-trait = "0.1"
+derive_more = { version = "2", features = ["full"] }
 
 # tokio stream
-tokio-tungstenite = { version = "0.27.0", features = [
+tokio-tungstenite = { version = "0.28.0", features = [
     "__rustls-tls",
     "handshake",
     "rustls-tls-native-roots",
 ] }
-tokio-stream = "0.1.17"
+tokio-stream = "0.1"
 tokio-util = { version = "0.7.8", features = ["codec"] }
 
 # webserver
-axum = { version = "0.8.4", features = ["form", "json", "tokio", "ws", "macros"] }
-axum-server = { version = "0.7.2", features = ["tls-rustls"] }
-axum-extra = { version = "0.10.1", features = ["typed-header"] }
-tower = { version = "0.5.2", features = ["full"] }
+axum = { version = "0.8", features = ["form", "json", "tokio", "ws", "macros"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-extra = { version = "0.12", features = ["typed-header"] }
+tower = { version = "0.5", features = ["full"] }
 
 # 타워 세션은 사실 main에만 있어도 됨, errors 에서 사용하지만 claims에서 사용하므로 여기에 있음
-tower-sessions = "0.14.0"
-tower-cookies = "0.11.0"
-oauth2 = "5.0.0"
+tower-sessions = "0.14"
+tower-cookies = "0.11"
+oauth2 = "5"
 
 # others
 # dashmap = "6.1.0"
 
-base64 = "0.22.0"
-bitflags = "2.9.1"
-rand = { version = "0.9.1", features = ["std"] }
-url = "2.5.4"
-thiserror = "2.0.10"
-uuid = "1.17.0"
+base64 = "0.22"
+bitflags = "2"
+rand = { version = "0.9", features = ["std"] }
+url = "2.5"
+
+uuid = "1"
 
 ta = "0.5.0"
 meval = "0.2"
