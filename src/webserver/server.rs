@@ -4,6 +4,7 @@ use axum::{
 
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
+use serde_with::{serde_as, DefaultOnNull};
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -31,10 +32,6 @@ pub struct MiddlewareConfig {
     #[serde(default)]
     pub logging: Option<LoggingConfig>,
     
-    /// JWT 및 세션 TTL 설정
-    #[serde(default)]
-    pub jwt: Option<JwtConfig>,
-    
     /// 타임아웃 설정
     #[serde(default)]
     pub timeout: Option<TimeoutConfig>,
@@ -58,38 +55,66 @@ pub struct MiddlewareConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    #[serde(default)]
-    pub http_port: Option<u16>,
+    /// HTTP 포트 (리다이렉트용)
+    pub http_port: u16,
     
-    #[serde(default)]
-    pub https_port: Option<u16>,
+    /// HTTPS 포트 (실제 서비스 포트)
+    pub https_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
-    #[serde(default)]
-    pub cert_file: Option<String>,
+    /// SSL 인증서 파일 경로
+    pub cert_file: String,
     
-    #[serde(default)]
-    pub key_file: Option<String>,
+    /// SSL 개인키 파일 경로
+    pub key_file: String,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
+    /// 요청 로깅 활성화 여부
     #[serde(default)]
-    pub log_yaml_file: Option<String>,
+    pub enable_request_logging: bool,
+    
+    /// 응답 로깅 활성화 여부
+    #[serde(default)]
+    pub enable_response_logging: bool,
+    
+    /// 응답 본문 로깅 활성화 여부 (보안상 false 권장)
+    #[serde(default)]
+    pub enable_body_logging: bool,
+    
+    /// 요청 로깅 레벨 (trace, debug, info, warn, error)
+    #[serde(default = "default_log_level")]
+    pub request_log_level: String,
+    
+    /// 응답 로깅 레벨 (trace, debug, info, warn, error)
+    #[serde(default = "default_log_level")]
+    pub response_log_level: String,
+    
+    /// 실패 로깅 레벨 (trace, debug, info, warn, error)
+    #[serde(default = "default_error_log_level")]
+    pub failure_log_level: String,
+    
+    /// 로깅에서 제외할 경로 목록 (예: ["/health", "/metrics"])
+    #[serde_as(as = "DefaultOnNull<Vec<_>>")]
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
+    
+    /// 로깅에서 제외할 민감한 헤더 목록 (예: ["authorization", "cookie"])
+    #[serde_as(as = "DefaultOnNull<Vec<_>>")]
+    #[serde(default)]
+    pub sensitive_headers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JwtConfig {
-    #[serde(default)]
-    pub access_ttl: Option<i64>,
-    
-    #[serde(default)]
-    pub refresh_ttl: Option<i64>,
-    
-    #[serde(default)]
-    pub session_ttl: Option<i64>,
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_error_log_level() -> String {
+    "warn".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,21 +146,20 @@ pub struct MiddlewareSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
-    #[serde(default)]
+    /// IP당 초당 허용 요청 수
     pub per_second: Option<u64>,
     
-    #[serde(default)]
+    /// 최대 버스트 크기
     pub burst_size: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionConfig {
-    #[serde(default)]
-    pub enable: Option<bool>,
-    
+    /// 압축 최소 크기 (바이트) - 이 크기 이상의 응답만 압축
     #[serde(default)]
     pub min_size: Option<u64>,
     
+    /// 압축 품질 (1-11) - 높을수록 압축률이 높지만 CPU 사용량 증가
     #[serde(default)]
     pub quality: Option<u8>,
 }
@@ -181,9 +205,10 @@ pub struct SecurityHeadersConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HstsConfig {
-    #[serde(default)]
-    pub max_age: Option<u64>,
+    /// HSTS max-age 값 (초)
+    pub max_age: u64,
     
+    /// includeSubDomains 플래그
     #[serde(default)]
     pub include_subdomains: Option<bool>,
 }
