@@ -19,8 +19,14 @@ use serde::{Deserialize, Serialize};
 use tower::{Layer, Service};
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
-    compression::CompressionLayer, cors::CorsLayer, limit::RequestBodyLimitLayer,
-    set_header::SetResponseHeaderLayer, trace::TraceLayer,
+    compression::{
+        predicate::{NotForContentType, SizeAbove},
+        CompressionLayer, Predicate,
+    },
+    cors::CorsLayer,
+    limit::RequestBodyLimitLayer,
+    set_header::SetResponseHeaderLayer,
+    trace::TraceLayer,
 };
 // https://www.runit.cloud/2020/04/https-ssl.html
 
@@ -76,6 +82,7 @@ pub struct HttpsConfig {
     pub key_file: String,
 
     /// HTTP 포트 (리다이렉트용)
+    #[serde(default)]
     pub http_port: Option<u16>,
 }
 
@@ -100,18 +107,24 @@ pub struct RateLimitConfig {
     pub per_second: u64,
 
     /// 최대 버스트 크기
+    #[serde(default)]
     pub burst_size: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionConfig {
     /// 압축 최소 크기 (바이트) - 이 크기 이상의 응답만 압축
-    #[serde(default)]
-    pub min_size: Option<u64>,
+    pub min_size: u16,
 
     /// 압축 품질 (1-11) - 높을수록 압축률이 높지만 CPU 사용량 증가
     #[serde(default)]
-    pub quality: Option<u8>,
+    pub gzip: Option<bool>,
+
+    #[serde(default)]
+    pub deflate: Option<bool>,
+
+    #[serde(default)]
+    pub br: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +266,14 @@ pub struct Server {
 }
 
 impl Server {
+    pub fn get_middleware_config(&self) -> &MiddlewareConfig {
+        &self.middleware_config
+    }
+
+    pub fn get_server_config(&self) -> &ServerConfig {
+        &self.server_config
+    }
+
     /// 로깅 미들웨어 적용
     fn apply_logging(router: axum::Router) -> axum::Router {
         cassry::info!("[apply_logging] TraceLayer applied");
@@ -316,14 +337,43 @@ impl Server {
     }
 
     /// 컴프레션 미들웨어 적용
-    fn apply_compression(router: axum::Router, compression: &CompressionConfig) -> axum::Router {
+    fn apply_compression(router: axum::Router, conf: &CompressionConfig) -> axum::Router {
+        if conf.min_size < 1024 {
+            cassry::warn!(
+                "[apply_compression] min_size is too small: {}",
+                conf.min_size
+            );
+        }
+
+        let min_size = if !(0..u16::MAX).contains(&conf.min_size) {
+            cassry::error!(
+                "[apply_compression] min_size is too large: {}",
+                conf.min_size
+            );
+            u16::MAX
+        } else {
+            conf.min_size
+        };
+
+        // SizeAbove는 u16을 기대하므로 변환 (최대 65535 바이트까지)
+        let predicate = SizeAbove::new(min_size)
+            .and(NotForContentType::GRPC)
+            .and(NotForContentType::IMAGES)
+            .and(NotForContentType::SSE);
+        let compression_layer = CompressionLayer::new()
+            .gzip(conf.gzip.unwrap_or(false))
+            .deflate(conf.deflate.unwrap_or(false))
+            .br(conf.br.unwrap_or(false))
+            .compress_when(predicate);
+
         cassry::info!(
-            "[apply_compression] CompressionLayer applied: gzip=true, deflate=true, br=true, min_size={:?}, quality={:?}",
-            compression.min_size,
-            compression.quality
+            "[apply_compression] CompressionLayer applied: min_size={} bytes, gzip={}, deflate={}, br={}",
+            min_size,
+            conf.gzip.unwrap_or(false),
+            conf.deflate.unwrap_or(false),
+            conf.br.unwrap_or(false)
         );
 
-        let compression_layer = CompressionLayer::new().gzip(true).deflate(true).br(true);
         router.layer(compression_layer)
     }
 
