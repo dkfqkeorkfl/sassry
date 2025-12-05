@@ -8,7 +8,7 @@ use std::{
 
 use super::super::webserver::websocket::*;
 use cassry::{
-    secrecy::SecretString,
+    secrecy::{ExposeSecret, SecretString},
     serialization::*,
     *,
 };
@@ -1841,10 +1841,38 @@ pub struct ExchangeKey {
     pub email: SecretString,
     pub key: SecretString,
     pub secret: SecretString,
-
     pub passphrase: SecretString,
-    pub socks5ip: String,
-    pub socks5port: String,
+
+    pub socks5ip: SecretString,
+    pub socks5port: SecretString,
+}
+
+impl TryFrom<HashMap<String, SecretString>> for ExchangeKey {
+    type Error = anyhow::Error;
+
+    fn try_from(mut map: HashMap<String, SecretString>) -> anyhow::Result<Self> {
+        let tag = map.remove("tag").ok_or(anyhowln!("missing key: tag"))?;
+        let exchange = map.remove("exchange").ok_or(anyhowln!("missing key: exchange"))?;
+        let is_testnet = map.remove("is_testnet").ok_or(anyhowln!("missing key: is_testnet"))?;
+        let email = map.remove("email").ok_or(anyhowln!("missing key: email"))?;
+        let key = map.remove("key").ok_or(anyhowln!("missing key: key"))?;
+        let secret = map.remove("secret").ok_or(anyhowln!("missing key: secret"))?;
+        let passphrase = map.remove("passphrase").ok_or(anyhowln!("missing key: passphrase"))?;
+        let socks5ip = map.remove("socks5ip").ok_or(anyhowln!("missing key: socks5ip"))?;
+        let socks5port = map.remove("socks5port").ok_or(anyhowln!("missing key: socks5port"))?;
+
+        Ok(Self {
+            tag: tag.expose_secret().to_string(),
+            exchange: exchange.expose_secret().to_string(),
+            is_testnet: is_testnet.expose_secret().to_lowercase().parse::<bool>()?,
+            email,
+            key,
+            secret,
+            passphrase,
+            socks5ip,
+            socks5port,
+        })
+    }
 }
 
 #[serde_as]

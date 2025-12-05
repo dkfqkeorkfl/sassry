@@ -21,3 +21,8 @@ pub use rand;
 pub use oauth2;
 pub use uuid;
 pub use cassry_derive::ErrCode;
+
+#[cfg(debug_assertions)]
+pub const DEBUG_POST_FIX: &str = ".dev";
+#[cfg(not(debug_assertions))]
+pub const RELEASE_POST_FIX: &str = ".prod";
