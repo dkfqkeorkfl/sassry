@@ -38,9 +38,11 @@ tokio-util = { version = "0.7.8", features = ["codec"] }
 axum = { version = "0.8", features = ["form", "json", "tokio", "ws", "macros"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }
-tower = { version = "0.5", features = ["full"] }
 
 # 타워 세션은 사실 main에만 있어도 됨, errors 에서 사용하지만 claims에서 사용하므로 여기에 있음
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["full"] }
+tower_governor = "0.8"
 tower-sessions = "0.14"
 tower-cookies = "0.11"
 oauth2 = "5"

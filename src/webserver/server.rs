@@ -1,30 +1,30 @@
 use axum::{
     extract::State,
     http::{StatusCode, Uri},
-    response::IntoResponse,
-    ServiceExt,
 };
 
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use serde_with::{serde_as, DurationSeconds};
 
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::{
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+};
 
-use axum::http::{HeaderName, HeaderValue, Method, Request};
-use axum::response::Response;
+use axum::http::{HeaderName, HeaderValue, Method};
 use cassry::*;
 use serde::{Deserialize, Serialize};
-use tower::{Layer, Service};
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     compression::{
-        predicate::{NotForContentType, SizeAbove},
-        CompressionLayer, Predicate,
+        CompressionLayer, Predicate, predicate::{NotForContentType, SizeAbove}
     },
     cors::CorsLayer,
     limit::RequestBodyLimitLayer,
+    normalize_path::NormalizePathLayer,
+    sensitive_headers::{SetSensitiveRequestHeadersLayer, SetSensitiveResponseHeadersLayer},
     set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
@@ -38,7 +38,7 @@ use tower_http::{
 pub struct MiddlewareConfig {
     /// 로깅 활성화 여부
     #[serde(default)]
-    pub logging: Option<bool>,
+    pub log: Option<LogConfig>,
 
     /// 요청 타임아웃 (초 단위로 직렬화)
     /// JSON에서는 숫자(초)로 저장되고, std::time::Duration으로 변환됨
@@ -61,6 +61,15 @@ pub struct MiddlewareConfig {
     /// 보안 헤더 설정
     #[serde(default)]
     pub security_headers: Option<SecurityHeadersConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogConfig {
+    #[serde(default)]
+    pub sensitive_request: Vec<String>,
+
+    #[serde(default)]
+    pub sensitive_response: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,77 +198,6 @@ pub struct Param {
     pub ping_interval: chrono::Duration,
 }
 
-// StatusCode가 200이 아닐 때 로깅하는 레이어
-#[derive(Clone)]
-pub struct Non200StatusLoggingLayer;
-
-impl<S> Layer<S> for Non200StatusLoggingLayer {
-    type Service = Non200StatusLoggingService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        Non200StatusLoggingService {
-            inner: std::sync::Arc::new(tokio::sync::Mutex::new(inner)),
-        }
-    }
-}
-
-pub struct Non200StatusLoggingService<S> {
-    inner: std::sync::Arc<tokio::sync::Mutex<S>>,
-}
-
-impl<S> Clone for Non200StatusLoggingService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<S, B> Service<Request<B>> for Non200StatusLoggingService<S>
-where
-    S: Service<Request<B>, Response = Response> + Send + 'static,
-    S::Future: Send + 'static,
-    B: Send + 'static,
-{
-    type Response = Response;
-    type Error = S::Error;
-    type Future = std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
-    >;
-
-    fn poll_ready(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        // 이 레이어는 단순히 로깅만 하므로 항상 준비되어 있다고 가정
-        // 실제 poll_ready 체크는 call에서 내부 서비스를 호출할 때 수행됨
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<B>) -> Self::Future {
-        let path = req.uri().path().to_string();
-        let method = req.method().clone();
-        let inner = self.inner.clone();
-
-        Box::pin(async move {
-            let mut inner_guard = inner.lock().await;
-            let response = inner_guard.call(req).await?;
-            let status = response.status();
-
-            if status != StatusCode::OK {
-                error!(
-                    "Non-200 status code: {} {} -> {}",
-                    method,
-                    path,
-                    status.as_u16()
-                );
-            }
-
-            Ok(response)
-        })
-    }
-}
-
 pub struct Server {
     server_config: ServerConfig,
     middleware_config: MiddlewareConfig,
@@ -275,9 +213,31 @@ impl Server {
     }
 
     /// 로깅 미들웨어 적용
-    fn apply_logging(router: axum::Router) -> axum::Router {
+    fn apply_logging(mut router: axum::Router, log: &LogConfig) -> anyhow::Result<axum::Router> {
         cassry::info!("[apply_logging] TraceLayer applied");
-        router.layer(TraceLayer::new_for_http())
+        router = router.layer(TraceLayer::new_for_http());
+        if !log.sensitive_request.is_empty() {
+            let headers = log
+                .sensitive_request
+                .iter()
+                .map(|s| HeaderName::from_str(s))
+                .collect::<Result<Vec<HeaderName>, _>>()
+                .map_err(|e| anyhowln!("failed to parse header name: {}", e))?;
+
+            router = router.layer(SetSensitiveRequestHeadersLayer::new(headers))
+        }
+
+        if !log.sensitive_response.is_empty() {
+            let headers = log
+                .sensitive_response
+                .iter()
+                .map(|s| HeaderName::from_str(s))
+                .collect::<Result<Vec<HeaderName>, _>>()
+                .map_err(|e| anyhowln!("failed to parse header name: {}", e))?;
+
+            router = router.layer(SetSensitiveResponseHeadersLayer::new(headers))
+        }
+        Ok(router)
     }
 
     /// 타임아웃 Duration을 그대로 사용 (이미 std::time::Duration)
@@ -572,8 +532,8 @@ impl Server {
         middleware_config: MiddlewareConfig,
         mut router: axum::Router,
     ) -> anyhow::Result<Self> {
-        if middleware_config.logging.filter(|v| *v).unwrap_or(false) {
-            router = Self::apply_logging(router);
+        if let Some(log) = &middleware_config.log {
+            router = Self::apply_logging(router, log)?;
         }
 
         if let Some(middleware) = &middleware_config.middleware {
@@ -593,10 +553,12 @@ impl Server {
         }
 
         // Server 헤더 제거 (보안)
-        router = router.layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::SERVER,
-            HeaderValue::from_static(""),
-        ));
+        router = router
+            .layer(SetResponseHeaderLayer::overriding(
+                axum::http::header::SERVER,
+                HeaderValue::from_static(""),
+            ))
+            .layer(NormalizePathLayer::trim_trailing_slash());
 
         // ServiceBuilder 설정
         let service_builder = tower::ServiceBuilder::new()
