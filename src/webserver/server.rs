@@ -97,7 +97,7 @@ pub struct MiddlewareSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
     /// IP당 초당 허용 요청 수
-    pub per_second: Option<u64>,
+    pub per_second: u64,
 
     /// 최대 버스트 크기
     pub burst_size: Option<u32>,
@@ -255,43 +255,76 @@ pub struct Server {
 impl Server {
     /// 로깅 미들웨어 적용
     fn apply_logging(router: axum::Router) -> axum::Router {
+        cassry::info!("[apply_logging] TraceLayer applied");
         router.layer(TraceLayer::new_for_http())
     }
 
     /// 타임아웃 Duration을 그대로 사용 (이미 std::time::Duration)
-    fn apply_timeout(timeout: std::time::Duration) -> std::time::Duration {
-        timeout
+    fn apply_timeout(timeout: Option<std::time::Duration>) -> std::time::Duration {
+        let result = timeout.unwrap_or(std::time::Duration::from_secs(60 * 60 * 24));
+        cassry::info!(
+            "[apply_timeout] timeout configured: {} seconds",
+            result.as_secs()
+        );
+        result
     }
 
     /// 미들웨어 설정 적용 (RequestBodyLimit, RateLimit)
-    fn apply_middleware(router: axum::Router, middleware: &MiddlewareSettings) -> axum::Router {
-        let mut router = router;
-
+    fn apply_middleware(
+        mut router: axum::Router,
+        middleware: &MiddlewareSettings,
+    ) -> anyhow::Result<axum::Router> {
         // RequestBodyLimitLayer
         if let Some(limit) = middleware.request_body_limit {
             router = router.layer(RequestBodyLimitLayer::new(limit as usize));
+            cassry::info!(
+                "[apply_middleware] RequestBodyLimitLayer applied: {} bytes",
+                limit
+            );
         }
 
         // Rate Limiting (GovernorLayer)
         if let Some(rate_limit) = &middleware.rate_limit {
-            if let (Some(per_second), Some(burst_size)) =
-                (rate_limit.per_second, rate_limit.burst_size)
-            {
+            let governor_conf = if let Some(burst_size) = rate_limit.burst_size {
                 let governor_conf = GovernorConfigBuilder::default()
-                    .per_second(per_second)
+                    .per_second(rate_limit.per_second)
                     .burst_size(burst_size)
                     .finish()
-                    .unwrap();
-                router = router.layer(GovernorLayer::new(governor_conf));
-            }
+                    .ok_or(anyhowln!("failed to build GovernorConfig"))?;
+                cassry::info!(
+                    "[apply_middleware] GovernorLayer applied: per_second={}, burst_size={}",
+                    rate_limit.per_second,
+                    burst_size
+                );
+                governor_conf
+            } else {
+                let governor_conf = GovernorConfigBuilder::default()
+                    .per_second(rate_limit.per_second)
+                    .finish()
+                    .ok_or(anyhowln!("failed to build GovernorConfig"))?;
+                cassry::info!(
+                    "[apply_middleware] GovernorLayer applied: per_second={}",
+                    rate_limit.per_second,
+                );
+                governor_conf
+            };
+
+            router = router.layer(GovernorLayer::new(governor_conf));
         }
 
-        router
+        Ok(router)
     }
 
     /// 컴프레션 미들웨어 적용
-    fn apply_compression(router: axum::Router, _compression: &CompressionConfig) -> axum::Router {
-        router.layer(CompressionLayer::new().gzip(true).deflate(true).br(true))
+    fn apply_compression(router: axum::Router, compression: &CompressionConfig) -> axum::Router {
+        cassry::info!(
+            "[apply_compression] CompressionLayer applied: gzip=true, deflate=true, br=true, min_size={:?}, quality={:?}",
+            compression.min_size,
+            compression.quality
+        );
+
+        let compression_layer = CompressionLayer::new().gzip(true).deflate(true).br(true);
+        router.layer(compression_layer)
     }
 
     /// CORS 미들웨어 적용
@@ -305,6 +338,7 @@ impl Server {
                     origins.iter().map(|o| o.parse::<HeaderValue>()).collect();
                 if let Ok(parsed) = parsed_origins {
                     cors_layer = cors_layer.allow_origin(parsed);
+                    cassry::info!("[apply_cors] allowed_origins applied: {:?}", origins);
                 }
             }
         }
@@ -315,6 +349,7 @@ impl Server {
                 methods.iter().map(|m| m.parse::<Method>()).collect();
             if let Ok(parsed) = parsed_methods {
                 cors_layer = cors_layer.allow_methods(parsed);
+                cassry::info!("[apply_cors] allowed_methods applied: {:?}", methods);
             }
         }
 
@@ -324,17 +359,20 @@ impl Server {
                 headers.iter().map(|h| h.parse::<HeaderName>()).collect();
             if let Ok(parsed) = parsed_headers {
                 cors_layer = cors_layer.allow_headers(parsed);
+                cassry::info!("[apply_cors] allowed_headers applied: {:?}", headers);
             }
         }
 
         // Allow Credentials
         if let Some(allow_creds) = cors.allow_credentials {
             cors_layer = cors_layer.allow_credentials(allow_creds);
+            cassry::info!("[apply_cors] allow_credentials applied: {}", allow_creds);
         }
 
         // Max Age
         if let Some(max_age) = cors.max_age {
             cors_layer = cors_layer.max_age(std::time::Duration::from_secs(max_age));
+            cassry::info!("[apply_cors] max_age applied: {} seconds", max_age);
         }
 
         router.layer(cors_layer)
@@ -342,11 +380,9 @@ impl Server {
 
     /// 보안 헤더 미들웨어 적용
     fn apply_security_headers(
-        router: axum::Router,
+        mut router: axum::Router,
         security: &SecurityHeadersConfig,
     ) -> axum::Router {
-        let mut router = router;
-
         // X-Frame-Options
         if let Some(x_frame) = &security.x_frame_options {
             if let Ok(header_value) = HeaderValue::from_str(x_frame) {
@@ -354,6 +390,10 @@ impl Server {
                     axum::http::header::X_FRAME_OPTIONS,
                     header_value,
                 ));
+                cassry::info!(
+                    "[apply_security_headers] X-Frame-Options applied: {}",
+                    x_frame
+                );
             }
         }
 
@@ -364,6 +404,10 @@ impl Server {
                     axum::http::header::X_CONTENT_TYPE_OPTIONS,
                     header_value,
                 ));
+                cassry::info!(
+                    "[apply_security_headers] X-Content-Type-Options applied: {}",
+                    x_content_type
+                );
             }
         }
 
@@ -379,6 +423,11 @@ impl Server {
                     axum::http::header::STRICT_TRANSPORT_SECURITY,
                     header_value,
                 ));
+                cassry::info!(
+                    "[apply_security_headers] HSTS applied: max_age={}, include_subdomains={:?}",
+                    hsts.max_age,
+                    hsts.include_subdomains
+                );
             }
         }
 
@@ -389,6 +438,7 @@ impl Server {
                     axum::http::header::CONTENT_SECURITY_POLICY,
                     header_value,
                 ));
+                cassry::info!("[apply_security_headers] CSP Policy applied: {}", csp);
             }
         }
 
@@ -399,6 +449,10 @@ impl Server {
                     axum::http::header::REFERRER_POLICY,
                     header_value,
                 ));
+                cassry::info!(
+                    "[apply_security_headers] Referrer-Policy applied: {}",
+                    referrer
+                );
             }
         }
 
@@ -409,6 +463,10 @@ impl Server {
                     HeaderName::from_static("permissions-policy"),
                     header_value,
                 ));
+                cassry::info!(
+                    "[apply_security_headers] Permissions-Policy applied: {}",
+                    permissions
+                );
             }
         }
 
@@ -469,7 +527,7 @@ impl Server {
         }
 
         if let Some(middleware) = &middleware_config.middleware {
-            router = Self::apply_middleware(router, middleware);
+            router = Self::apply_middleware(router, middleware)?;
         }
 
         if let Some(compression) = &middleware_config.compression {
@@ -490,16 +548,9 @@ impl Server {
             HeaderValue::from_static(""),
         ));
 
-        // 타임아웃 설정 (기본값: 5초)
-        let timeout_duration = if let Some(timeout) = middleware_config.timeout {
-            Self::apply_timeout(timeout)
-        } else {
-            std::time::Duration::from_secs(60 * 60 * 24)
-        };
-
         // ServiceBuilder 설정
         let service_builder = tower::ServiceBuilder::new()
-            .timeout(timeout_duration)
+            .timeout(Self::apply_timeout(middleware_config.timeout))
             .load_shed();
 
         // 서비스 빌더에 추가 설정 적용
@@ -556,7 +607,6 @@ impl Server {
         })
     }
 
-    
     async fn redirect_http_to_https(ports: Arc<Param>) -> anyhow::Result<()> {
         fn make_https(host: String, uri: Uri, ports: Arc<Param>) -> anyhow::Result<Uri> {
             let mut parts = uri.into_parts();
@@ -597,7 +647,7 @@ impl Server {
         cassry::debug!("http is listening on {:?}", addr);
         Ok(ret)
     }
-    
+
     pub async fn new(param: Param, router: axum::Router) -> anyhow::Result<Self> {
         let service = tower::ServiceBuilder::new() // 초당 10 요청
             .timeout(std::time::Duration::from_secs(5))
