@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
+use serde_with::{serde_as, DurationSecondsWithFrac};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,6 @@ use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Tungs
 use cassry::{
     chrono::DateTime,
     futures::Sink,
-    util::{deserialize_chrono_duration, serialize_chrono_duration},
     *,
 };
 
@@ -115,6 +115,7 @@ impl Into<TungsteniteMessage> for Message {
     }
 }
 
+
 #[derive(Debug)]
 pub enum Signal {
     Opened,
@@ -123,21 +124,16 @@ pub enum Signal {
     Error(anyhow::Error),
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebsocketParam {
     pub url: String,
     pub protocol: String,
     pub header: HashMap<String, String>,
 
-    #[serde(
-        serialize_with = "serialize_chrono_duration",
-        deserialize_with = "deserialize_chrono_duration"
-    )]
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub eject: chrono::Duration,
-    #[serde(
-        serialize_with = "serialize_chrono_duration",
-        deserialize_with = "deserialize_chrono_duration"
-    )]
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub ping_interval: chrono::Duration,
 }
 

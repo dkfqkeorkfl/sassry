@@ -9,10 +9,7 @@ use std::{
 use super::super::webserver::websocket::*;
 use cassry::{
     secrecy::SecretString,
-    util::{
-        deserialize_anyhow_error, deserialize_chrono_duration, serialize_anyhow_error,
-        serialize_chrono_duration,
-    },
+    serialization::*,
     *,
 };
 use chrono::prelude::*;
@@ -24,6 +21,7 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 use serde_json::json;
+use serde_with::{serde_as, DurationSecondsWithFrac};
 use tokio::sync::RwLock;
 
 fn serialize_error_map<S>(
@@ -1840,43 +1838,26 @@ pub struct ExchangeKey {
     pub exchange: String,
     pub is_testnet: bool,
 
-    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
     pub email: SecretString,
-
-    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
     pub key: SecretString,
-
-    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
     pub secret: SecretString,
 
-    #[serde(deserialize_with = "cassry::util::deserialize_secret_string")]
     pub passphrase: SecretString,
     pub socks5ip: String,
     pub socks5port: String,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeConfig {
-    #[serde(
-        serialize_with = "serialize_chrono_duration",
-        deserialize_with = "deserialize_chrono_duration"
-    )]
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub ping_interval: chrono::Duration,
 
-    #[serde(
-        serialize_with = "serialize_chrono_duration",
-        deserialize_with = "deserialize_chrono_duration"
-    )]
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub eject: chrono::Duration,
-    #[serde(
-        serialize_with = "serialize_chrono_duration",
-        deserialize_with = "deserialize_chrono_duration"
-    )]
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub sync_expired_duration: chrono::Duration, // order가 패킷으로 받더라도 후에 다시 갱신하기 위하여 expired가 있다
-    #[serde(
-        serialize_with = "serialize_chrono_duration",
-        deserialize_with = "deserialize_chrono_duration"
-    )]
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub state_expired_duration: chrono::Duration, // ordering, cancelling 이후에 expired를 설정하는 시간
 
     pub opt_max_order_chche: usize,

@@ -18,7 +18,7 @@ cassry-derive = { path = "../cassry/derive" }
 
 # below are dependencies should be imported each project
 serde = { version = "1", features = ["derive", "rc"] }
-serde_with = "3"
+serde_with = { version = "3", features = ["chrono_0_4", "base64", "hex"] }
 thiserror = "2"
 
 # tags
@@ -63,5 +63,3 @@ meval = "0.2"
 # tls-listener = { version = "0.9.1", features = [
 #     "rustls",
 # ] }
-
-
