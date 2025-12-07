@@ -1,21 +1,16 @@
 use super::error::HttpError;
-use axum::{
-    extract::FromRequestParts,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-};
+use axum::extract::FromRequestParts;
 use cassry::{
     chrono::Utc,
     ring::hmac,
     secrecy::{ExposeSecret, SecretString},
+    tokio::sync::RwLock,
     *,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-
-use tokio::sync::RwLock;
 
 /// 토큰 타입 구분 (access/refresh 등)
 // #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -138,7 +133,6 @@ where
 
 pub struct JwtIssuer {
     secret: SecretString,
-    name: String,
 }
 
 impl JwtIssuer {
@@ -176,27 +170,33 @@ impl JwtIssuer {
     }
 }
 
-pub struct AccessIssuer {
-    isser: RwLock<JwtIssuer>,
+pub struct AccessIssuerImpl {
+    name : String,
+    isser: JwtIssuer,
     access_ttl: chrono::Duration,
     refresh_ttl: chrono::Duration,
 }
 
-impl AccessIssuer {
+impl AccessIssuerImpl {
+    pub fn get_name(&self) -> &String {
+        &self.name
+    }
+
+    pub fn set_access_ttl(&mut self, access_ttl: chrono::Duration) {
+        self.access_ttl = access_ttl;
+    }
     pub fn get_access_ttl(&self) -> &chrono::Duration {
         &self.access_ttl
     }
+
+    
     pub fn get_refresh_ttl(&self) -> &chrono::Duration {
         &self.refresh_ttl
     }
-
-    pub const fn get_cookie_name() -> &'static str {
-        "access"
+    pub fn set_refresh_ttl(&mut self, refresh_ttl: chrono::Duration) {
+        self.refresh_ttl = refresh_ttl;
     }
-
-    pub const fn get_session_sub_name() -> &'static str {
-        "sub"
-    }
+    
 
     /// 새로운 JwtManager 인스턴스 생성
     pub fn new(
@@ -206,26 +206,24 @@ impl AccessIssuer {
         refresh_ttl: chrono::Duration,
     ) -> Self {
         Self {
-            isser: RwLock::new(JwtIssuer { secret, name }),
+            name,
+            isser: JwtIssuer { secret },
             access_ttl,
             refresh_ttl,
         }
     }
 
-    pub async fn generate_jwt(&self, claims: &AccessClaims) -> anyhow::Result<String> {
-        self.isser.read().await.generate_jwt(claims)
+    pub fn generate_jwt(&self, claims: &AccessClaims) -> anyhow::Result<String> {
+        self.isser.generate_jwt(claims)
     }
 
     /// JWT 토큰 검증 (유효성, 만료 등)
-    pub async fn verify_jwt(
+    pub fn verify_jwt(
         &self,
         token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<AccessClaims> {
-        self.isser
-            .read()
-            .await
-            .verify::<AccessClaims>(token, validation)
+        self.isser.verify::<AccessClaims>(token, validation)
     }
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
@@ -298,87 +296,81 @@ impl AccessIssuer {
     }
 }
 
-// pub struct SocketIssuer {
-//     jssuer: RwLock<JwtIssuer>,
-//     expired_duration: chrono::Duration,
-//     refresh_duration: chrono::Duration,
-// }
+#[derive(Clone)]
+pub struct AccessIssuer {
+    isser: RwArc<AccessIssuerImpl>,
+}
 
-// impl SocketIssuer {
-//     pub fn new(
-//         name: String,
-//         secret: SecretString,
-//         expired_duration: chrono::Duration,
-//         refresh_duration: chrono::Duration,
-//     ) -> Self {
-//         Self {
-//             jssuer: RwLock::new(JwtIssuer { secret, name }),
-//             expired_duration,
-//             refresh_duration,
-//         }
-//     }
+impl AccessIssuer {
+    pub async fn get_name(&self) -> String {
+        self.isser.read().await.get_name().clone()
+    }
+    
+    pub async fn get_access_ttl(&self) -> chrono::Duration {
+        self.isser.read().await.get_access_ttl().clone()
+    }
+    pub async fn set_access_ttl(&mut self, access_ttl: chrono::Duration) {
+        self.isser.write().await.set_access_ttl(access_ttl);
+    }
 
-//     pub async fn generate_socket_jwt(
-//         &self,
-//         sub: u64,
-//         role: u64,
-//         signined: i64,
-//         web_identity: String,
-//     ) -> anyhow::Result<String> {
-//         let iat = Utc::now();
-//         let exp = (iat + self.expired_duration).timestamp();
-//         let rnbf = (iat + self.refresh_duration).timestamp();
-//         let aud = self.jssuer.read().await.compute_hash(&web_identity)?;
-//         let claims = SocketClaims {
-//             sub,
-//             role,
-//             aud,
-//             rnbf,
-//             nbf: signined,
-//             exp,
-//             iat: iat.timestamp(),
-//         };
+    pub async fn get_refresh_ttl(&self) -> chrono::Duration {
+        self.isser.read().await.get_refresh_ttl().clone()
+    }
+    pub async fn set_refresh_ttl(&mut self, refresh_ttl: chrono::Duration) {
+        self.isser.write().await.set_refresh_ttl(refresh_ttl);
+    }
 
-//         self.jssuer.read().await.generate_jwt(&claims)
-//     }
+    pub const fn get_cookie_name() -> &'static str {
+        "access"
+    }
 
-//     pub async fn refresh_socket_jwt(
-//         &self,
-//         jwt: &str,
-//         web_identity: String,
-//     ) -> anyhow::Result<String> {
-//         let claims = self.verify_socket_jwt(jwt, web_identity).await?;
+    pub const fn get_session_sub_name() -> &'static str {
+        "sub"
+    }
 
-//         let iat = Utc::now();
-//         let exp = (iat + self.expired_duration).timestamp();
-//         let rnbf = (iat + self.refresh_duration).timestamp();
-//         let claims = SocketClaims {
-//             sub: claims.sub,
-//             role: claims.role,
-//             aud: claims.aud,
-//             rnbf,
-//             nbf: claims.nbf,
-//             exp,
-//             iat: iat.timestamp(),
-//         };
-//         self.jssuer.read().await.generate_jwt(&claims)
-//     }
+    /// 새로운 JwtManager 인스턴스 생성
+    pub fn new(
+        name: String,
+        secret: SecretString,
+        access_ttl: chrono::Duration,
+        refresh_ttl: chrono::Duration,
+    ) -> Self {
+        Self {
+            isser: Arc::new(RwLock::new(AccessIssuerImpl {
+                name,
+                isser: JwtIssuer { secret },
+                access_ttl,
+                refresh_ttl,
+            })),
+        }
+    }
 
-//     pub async fn verify_socket_jwt(
-//         &self,
-//         token: &str,
-//         web_identity: String,
-//     ) -> anyhow::Result<SocketClaims> {
-//         let claims = self
-//             .jssuer
-//             .read()
-//             .await
-//             .verify::<SocketClaims>(token, None)?;
-//         let hash = self.jssuer.read().await.compute_hash(&web_identity)?;
-//         if claims.aud != hash {
-//             return Err(anyhow::anyhow!("Invalid web identity"));
-//         }
+    pub async fn generate_jwt(&self, claims: &AccessClaims) -> anyhow::Result<String> {
+        self.isser.read().await.generate_jwt(claims)
+    }
 
-//         Ok(claims)
-//     }
-// }
+    /// JWT 토큰 검증 (유효성, 만료 등)
+    pub async fn verify_jwt(
+        &self,
+        token: &str,
+        validation: Option<Validation>,
+    ) -> anyhow::Result<AccessClaims> {
+        self.isser.read().await.verify_jwt(token, validation)
+    }
+
+    /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
+    pub async fn login(&self, uid: u64, role: u64, from: String) -> (AccessClaims, RefreshClaims) {
+        self.isser.read().await.login(uid, role, from)
+    }
+
+    pub async fn refresh_access_token(
+        &self,
+        refresh_clams: &RefreshClaims,
+        access_claims: &AccessClaims,
+    ) -> anyhow::Result<(AccessClaims, RefreshClaims)> {
+        self.isser
+            .read()
+            .await
+            .refresh_access_token(refresh_clams, access_claims)
+    }
+}
