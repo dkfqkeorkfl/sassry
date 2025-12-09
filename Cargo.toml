@@ -36,7 +36,7 @@ tokio-util = { version = "0.7.8", features = ["codec"] }
 
 # webserver
 axum = { version = "0.8", features = ["form", "json", "tokio", "ws", "macros"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }
 
 # 타워 세션은 사실 main에만 있어도 됨, errors 에서 사용하지만 claims에서 사용하므로 여기에 있음
@@ -54,7 +54,7 @@ base64 = "0.22"
 bitflags = "2"
 rand = { version = "0.9", features = ["std"] }
 url = "2.5"
-
+bincode = { version = "2", features = ["serde"] }
 uuid = "1"
 
 ta = "0.5.0"

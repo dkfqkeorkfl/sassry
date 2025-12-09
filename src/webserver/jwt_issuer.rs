@@ -8,9 +8,10 @@ use cassry::{
     *,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::Arc;
 use uuid::Uuid;
+use base64::engine::Engine;
 
 /// 토큰 타입 구분 (access/refresh 등)
 // #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -31,17 +32,43 @@ use uuid::Uuid;
 //     }
 // }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SocketClaims {
-    pub sub: u64,
-    pub role: u64,
-    pub aud: String,
-    pub from: String,
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct InnerClaims {
+    pub uid : u64,
+    pub role : u64,
+    pub login_at: i64,
 
-    pub rnbf: i64, //refresh가 시작되는 시간.
-    pub nbf: i64,  // 로그인 시간(timestamp)
-    pub exp: i64,  // 만료 시간 (timestamp)
-    pub iat: i64,  // 발급 시간 (timestamp)
+    pub from : String,
+    pub nick : String,
+}
+
+impl Serialize for InnerClaims {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let config = bincode::config::standard();
+        let encoded = bincode::encode_to_vec(self, config)
+            .map_err(|e| serde::ser::Error::custom(format!("bincode serialization failed: {}", e)))?;
+        let base64_str = base64::engine::general_purpose::STANDARD.encode(&encoded);
+        serializer.serialize_str(&base64_str)
+    }
+}
+
+impl<'de> Deserialize<'de> for InnerClaims {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let config = bincode::config::standard();
+        let base64_str = String::deserialize(deserializer)?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&base64_str)
+            .map_err(|e| serde::de::Error::custom(format!("base64 decoding failed: {}", e)))?;
+        bincode::decode_from_slice(&decoded, config)
+            .map(|(result, _)| result)
+            .map_err(|e| serde::de::Error::custom(format!("bincode deserialization failed: {}", e)))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -49,12 +76,17 @@ pub struct AccessClaimsFrame<T> {
     pub jti: String, // 토큰 고유 ID
     pub from: String,
 
-    pub nbf: i64, // 로그인 시간 (timestamp)
-    pub iat: i64, // 발급 시간 (timestamp)
-    pub exp: i64, // 만료 시간 (timestamp)
+    /// 토큰의 유효 시작 시간, 로그인시간
+    pub nbf: i64,
+    /// 토큰의 발급 시간
+    pub iat: i64,
+    /// 토큰의 만료 시간
+    pub exp: i64,
 
-    pub sub: u64,  // 사용자 ID
-    pub role: u64, // 권한(플래그)
+    /// 사용자 ID
+    pub sub: u64,
+    /// 사용자 권한
+    pub role: u64,
 
     // refresh 토큰은 아래 정보를 세션에 담아야 한다.
     // pub aud: u64,              // 대상자 (클라이언트 ID 등)
@@ -113,7 +145,7 @@ where
                 .ok_or(HttpError::MissingJwtToken)?;
             let jwt_manager = parts
                 .extensions
-                .get::<Arc<AccessIssuer>>()
+                .get::<AccessIssuer>()
                 .ok_or(anyhow::anyhow!("JwtManager not found"))?;
 
             let mut validation = Validation::default();

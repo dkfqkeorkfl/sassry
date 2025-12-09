@@ -38,15 +38,6 @@ pub struct Config {
     pub session_ttl: i64,
 }
 
-impl Config {
-    pub fn duration_eject(&self) -> chrono::Duration {
-        util::f64_to_duration(self.server_eject)
-    }
-    pub fn duration_ping(&self) -> chrono::Duration {
-        util::f64_to_duration(self.server_ping)
-    }
-}
-
 pub struct Context {
     pub config: Arc<Config>,
     pub exchanges: manager::Manager,
