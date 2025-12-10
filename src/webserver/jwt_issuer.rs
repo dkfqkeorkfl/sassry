@@ -39,7 +39,7 @@ pub struct UserPayload {
     pub nick: String,
 
     pub login_at: i64,
-    pub payload_creation: i64,
+    pub payload_created_at: i64,
 }
 
 impl Serialize for UserPayload {
@@ -75,14 +75,14 @@ impl<'de> Deserialize<'de> for UserPayload {
 #[derive(Debug, Default, Clone, bincode::Encode, bincode::Decode)]
 pub struct AccessPayload {
     pub uid: u64,
-    pub payload_creation: i64,
+    pub payload_created_at: i64,
 }
 
 impl From<&UserPayload> for AccessPayload {
     fn from(payload: &UserPayload) -> Self {
         Self {
             uid: payload.uid,
-            payload_creation: payload.payload_creation,
+            payload_created_at: payload.payload_created_at,
         }
     }
 }
@@ -348,8 +348,8 @@ impl AccessIssuerImpl {
             return Err(anyhow::anyhow!(
                 "mismatch csrf token: uid={}, access_created_at={}, csrf_created_at={}",
                 csrf_claims.payload.uid,
-                access_claims.payload.payload_creation,
-                csrf_claims.payload.payload_creation,
+                access_claims.payload.payload_created_at,
+                csrf_claims.payload.payload_created_at,
             ));
         }
         Ok(ClaimsPair {
@@ -373,11 +373,11 @@ impl AccessIssuerImpl {
             role,
             nick,
             login_at: now.timestamp_millis(),
-            payload_creation: now.timestamp_millis(),
+            payload_created_at: now.timestamp_millis(),
         };
         let access_payload = AccessPayload {
             uid,
-            payload_creation: now.timestamp_millis(),
+            payload_created_at: now.timestamp_millis(),
         };
 
         let refresh_claims = UserRefreshClaims {
@@ -436,7 +436,7 @@ impl AccessIssuerImpl {
         }
 
         let now = Utc::now();
-        user_payload.payload_creation = now.timestamp_millis();
+        user_payload.payload_created_at = now.timestamp_millis();
         let refresh_claims = UserRefreshClaims {
             jti: Uuid::new_v4().to_string(),
             exp: (now + self.refresh_ttl).timestamp(),
