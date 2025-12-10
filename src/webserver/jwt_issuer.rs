@@ -5,7 +5,6 @@ use cassry::{
     chrono::Utc,
     ring::hmac,
     secrecy::{ExposeSecret, SecretString},
-    tokio::sync::RwLock,
     *,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
@@ -132,10 +131,10 @@ pub struct UserRefreshClaims {
 
     /// 환경
     pub env: String,
-    
+
     pub role: u64,
-    pub failed : usize,
-    pub password : Option<String>,
+    pub failed: usize,
+    pub password: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -177,7 +176,7 @@ where
             let mut validation = Validation::default();
             validation.validate_exp = false;
             let claims = jwt_manager
-                .verify_access_jwt(&cookie.value(), Some(validation))
+                .verify_jwt_access(&cookie.value(), Some(validation))
                 .await
                 .map_err(|e| HttpError::InvalidJwt(e))?;
             if chrono::Utc::now().timestamp() > claims.exp {
@@ -189,6 +188,69 @@ where
     }
 }
 
+impl<S> FromRequestParts<S> for UserCsrfClaims
+where
+    S: Send + Sync,
+{
+    type Rejection = HttpError;
+
+    fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
+        async move {
+            let access_cookie = parts
+                .extensions
+                .get::<tower_cookies::Cookies>()
+                .and_then(|cookies| cookies.get(AccessIssuer::get_cookie_name()))
+                .ok_or(HttpError::MissingJwtToken)?;
+
+            // Authorization 헤더에서 Bearer 토큰 추출 (먼저 추출하여 parts 빌림 충돌 방지)
+            let csrf_token = {
+                let auth_header = parts
+                    .headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|header| header.to_str().ok())
+                    .ok_or(HttpError::MissingJwtToken)?;
+
+                auth_header
+                    .strip_prefix("Bearer ")
+                    .ok_or(HttpError::InvalidJwt(anyhow::anyhow!(
+                        "Invalid Authorization header format"
+                    )))?
+                    .to_string()
+            };
+
+            // AccessIssuer를 먼저 가져옴
+            let jwt_manager = parts
+                .extensions
+                .get::<AccessIssuer>()
+                .ok_or(anyhow::anyhow!("JwtManager not found"))?;
+
+            let mut validation = Validation::default();
+            validation.validate_exp = false;
+            let csrf_claims = match jwt_manager
+                .verify_jwt_pair(access_cookie.value(), csrf_token.as_str(), Some(validation))
+                .await
+            {
+                Ok(claims) => claims,
+                Err(e) => {
+                    cassry::warn!("Invalid CSRF token: {}", e.to_string());
+                    return Err(HttpError::InvalidJwt(anyhow::anyhow!("Invalid CSRF token")));
+                }
+            };
+
+            // 만료 시간 확인
+            if chrono::Utc::now().timestamp() > csrf_claims.exp {
+                return Err(HttpError::ExpiredJwt);
+            }
+
+            Ok(csrf_claims)
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IssuedClaims {
     pub refresh_token: UserRefreshClaims,
     pub access_token: String,
@@ -286,12 +348,13 @@ impl AccessIssuerImpl {
         self.access_isser.generate_jwt(claims)
     }
 
-    pub fn verify_access_jwt(
+    pub fn verify_jwt_access(
         &self,
         access_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<UserAccessClaims> {
-        self.access_isser.verify::<UserAccessClaims>(access_token, validation)
+        self.access_isser
+            .verify::<UserAccessClaims>(access_token, validation)
     }
 
     /// JWT 토큰 검증 (유효성, 만료 등)
@@ -300,7 +363,7 @@ impl AccessIssuerImpl {
         access_token: &str,
         csrf_token: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<(UserCsrfClaims)> {
+    ) -> anyhow::Result<UserCsrfClaims> {
         let access_claims = self
             .access_isser
             .verify::<UserAccessClaims>(access_token, validation.clone())?;
@@ -323,6 +386,7 @@ impl AccessIssuerImpl {
         uid: u64,
         role: u64,
         nick: String,
+        password: String,
         user_agent: String,
     ) -> anyhow::Result<IssuedClaims> {
         let now = Utc::now();
@@ -347,7 +411,7 @@ impl AccessIssuerImpl {
             env: user_agent,
             role: role,
             failed: 0,
-            password: None,
+            password: password,
         };
 
         let access_claims = UserAccessClaims {
@@ -474,12 +538,15 @@ impl AccessIssuer {
         self.isser.read().await.generate_jwt(claims)
     }
 
-    pub async fn verify_access_jwt(
+    pub async fn verify_jwt_access(
         &self,
         access_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<UserAccessClaims> {
-        self.isser.read().await.verify_access_jwt(access_token, validation)
+        self.isser
+            .read()
+            .await
+            .verify_jwt_access(access_token, validation)
     }
 
     /// JWT 토큰 검증 (유효성, 만료 등)
@@ -501,9 +568,13 @@ impl AccessIssuer {
         uid: u64,
         role: u64,
         nick: String,
+        password: String,
         user_agent: String,
     ) -> anyhow::Result<IssuedClaims> {
-        self.isser.read().await.login(uid, role, nick, user_agent)
+        self.isser
+            .read()
+            .await
+            .login(uid, role, nick, password, user_agent)
     }
 
     pub async fn refresh_access_token(
