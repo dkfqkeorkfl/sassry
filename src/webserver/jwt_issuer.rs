@@ -75,14 +75,14 @@ impl<'de> Deserialize<'de> for UserPayload {
 #[derive(Debug, Default, Clone, bincode::Encode, bincode::Decode)]
 pub struct AccessPayload {
     pub uid: u64,
-    pub created_at: i64,
+    pub payload_creation: i64,
 }
 
 impl From<&UserPayload> for AccessPayload {
     fn from(payload: &UserPayload) -> Self {
         Self {
             uid: payload.uid,
-            created_at: payload.payload_creation,
+            payload_creation: payload.payload_creation,
         }
     }
 }
@@ -346,9 +346,10 @@ impl AccessIssuerImpl {
             .verify::<UserCsrfClaims>(csrf_token, validation)?;
         if csrf_claims.derived_from != access_claims.jti {
             return Err(anyhow::anyhow!(
-                "Invalid csrf token: from={}, jti={}",
-                csrf_claims.derived_from,
-                access_claims.jti
+                "mismatch csrf token: uid={}, access_created_at={}, csrf_created_at={}",
+                csrf_claims.payload.uid,
+                access_claims.payload.payload_creation,
+                csrf_claims.payload.payload_creation,
             ));
         }
         Ok(ClaimsPair {
@@ -376,7 +377,7 @@ impl AccessIssuerImpl {
         };
         let access_payload = AccessPayload {
             uid,
-            created_at: now.timestamp_millis(),
+            payload_creation: now.timestamp_millis(),
         };
 
         let refresh_claims = UserRefreshClaims {
