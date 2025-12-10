@@ -1,5 +1,5 @@
 use super::error::HttpError;
-use axum::extract::FromRequestParts;
+use axum::{extract::FromRequestParts, http::HeaderMap};
 use base64::engine::Engine;
 use cassry::{
     chrono::Utc,
@@ -10,6 +10,7 @@ use cassry::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::Arc;
+use tower_cookies::Cookies;
 use uuid::Uuid;
 
 /// 토큰 타입 구분 (access/refresh 등)
@@ -163,10 +164,9 @@ where
         _state: &S,
     ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
         async move {
-            let cookie = parts
+            let cookies = parts
                 .extensions
                 .get::<tower_cookies::Cookies>()
-                .and_then(|cookies| cookies.get(AccessIssuer::get_cookie_name()))
                 .ok_or(HttpError::MissingJwtToken)?;
             let jwt_manager = parts
                 .extensions
@@ -176,9 +176,8 @@ where
             let mut validation = Validation::default();
             validation.validate_exp = false;
             let claims = jwt_manager
-                .verify_jwt_access(&cookie.value(), Some(validation))
-                .await
-                .map_err(|e| HttpError::InvalidJwt(e))?;
+                .export_access_claims_from(cookies, Some(validation))
+                .await?;
             if chrono::Utc::now().timestamp() > claims.exp {
                 return Err(HttpError::ExpiredJwt);
             }
@@ -199,29 +198,10 @@ where
         _state: &S,
     ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
         async move {
-            let access_cookie = parts
+            let cookies = parts
                 .extensions
                 .get::<tower_cookies::Cookies>()
-                .and_then(|cookies| cookies.get(AccessIssuer::get_cookie_name()))
                 .ok_or(HttpError::MissingJwtToken)?;
-
-            // Authorization 헤더에서 Bearer 토큰 추출 (먼저 추출하여 parts 빌림 충돌 방지)
-            let csrf_token = {
-                let auth_header = parts
-                    .headers
-                    .get(axum::http::header::AUTHORIZATION)
-                    .and_then(|header| header.to_str().ok())
-                    .ok_or(HttpError::MissingJwtToken)?;
-
-                auth_header
-                    .strip_prefix("Bearer ")
-                    .ok_or(HttpError::InvalidJwt(anyhow::anyhow!(
-                        "Invalid Authorization header format"
-                    )))?
-                    .to_string()
-            };
-
-            // AccessIssuer를 먼저 가져옴
             let jwt_manager = parts
                 .extensions
                 .get::<AccessIssuer>()
@@ -229,32 +209,30 @@ where
 
             let mut validation = Validation::default();
             validation.validate_exp = false;
-            let csrf_claims = match jwt_manager
-                .verify_jwt_pair(access_cookie.value(), csrf_token.as_str(), Some(validation))
-                .await
-            {
-                Ok(claims) => claims,
-                Err(e) => {
-                    cassry::warn!("Invalid CSRF token: {}", e.to_string());
-                    return Err(HttpError::InvalidJwt(anyhow::anyhow!("Invalid CSRF token")));
-                }
-            };
+            let claims_pair = jwt_manager
+                .export_claims_pair_from(cookies, &parts.headers, Some(validation))
+                .await?;
 
             // 만료 시간 확인
-            if chrono::Utc::now().timestamp() > csrf_claims.exp {
+            if chrono::Utc::now().timestamp() > claims_pair.csrf_claims.exp {
                 return Err(HttpError::ExpiredJwt);
             }
 
-            Ok(csrf_claims)
+            Ok(claims_pair.csrf_claims)
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IssuedClaims {
-    pub refresh_token: UserRefreshClaims,
+    pub refresh_claims: UserRefreshClaims,
     pub access_token: String,
     pub csrf_token: String,
+}
+
+pub struct ClaimsPair {
+    pub access_claims: UserAccessClaims,
+    pub csrf_claims: UserCsrfClaims,
 }
 
 pub struct JwtIssuer {
@@ -344,10 +322,6 @@ impl AccessIssuerImpl {
         }
     }
 
-    pub fn generate_jwt(&self, claims: &UserAccessClaims) -> anyhow::Result<String> {
-        self.access_isser.generate_jwt(claims)
-    }
-
     pub fn verify_jwt_access(
         &self,
         access_token: &str,
@@ -363,7 +337,7 @@ impl AccessIssuerImpl {
         access_token: &str,
         csrf_token: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<UserCsrfClaims> {
+    ) -> anyhow::Result<ClaimsPair> {
         let access_claims = self
             .access_isser
             .verify::<UserAccessClaims>(access_token, validation.clone())?;
@@ -377,7 +351,10 @@ impl AccessIssuerImpl {
                 access_claims.jti
             ));
         }
-        Ok(csrf_claims)
+        Ok(ClaimsPair {
+            access_claims,
+            csrf_claims,
+        })
     }
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
@@ -421,36 +398,44 @@ impl AccessIssuerImpl {
             payload: access_payload,
         };
 
-        let csrf_claims = UserCsrfClaims {
-            jti: Uuid::new_v4().to_string(),
-            exp: access_claims.exp,
-            derived_from: access_claims.jti.clone(),
-            payload: user_payload,
-        };
-
+        let csrf_claims = self.generate_csrf_token(&access_claims, user_payload);
         Ok(IssuedClaims {
-            refresh_token: refresh_claims,
+            refresh_claims,
             access_token: self.access_isser.generate_jwt(&access_claims)?,
             csrf_token: self.csrf_isser.generate_jwt(&csrf_claims)?,
         })
     }
 
+    pub fn generate_csrf_token(
+        &self,
+        access_claims: &UserAccessClaims,
+        user_payload: UserPayload,
+    ) -> UserCsrfClaims {
+        UserCsrfClaims {
+            jti: Uuid::new_v4().to_string(),
+            exp: access_claims.exp,
+            derived_from: access_claims.jti.clone(),
+            payload: user_payload,
+        }
+    }
+
     pub fn refresh_access_token(
         &self,
+        prev_access_claims: &UserAccessClaims,
         prev_refresh_clams: UserRefreshClaims,
-        prev_csrf_claims: UserCsrfClaims,
+        mut user_payload: UserPayload,
     ) -> anyhow::Result<IssuedClaims> {
-        if prev_csrf_claims.derived_from != prev_refresh_clams.jti
-            || prev_csrf_claims.payload.uid != prev_refresh_clams.sub.parse::<u64>().unwrap()
+        if prev_access_claims.payload.uid != user_payload.uid
+            || prev_access_claims.derived_from != prev_refresh_clams.jti
         {
             return Err(anyhow::anyhow!(
-                "Invalid refresh token: from={}, sub={}",
-                prev_csrf_claims.derived_from,
-                prev_csrf_claims.payload.uid
+                "Invalid refresh token: uid={}",
+                prev_access_claims.payload.uid
             ));
         }
 
         let now = Utc::now();
+        user_payload.created_at = now.timestamp_millis();
         let refresh_claims = UserRefreshClaims {
             jti: Uuid::new_v4().to_string(),
             exp: (now + self.refresh_ttl).timestamp(),
@@ -468,18 +453,12 @@ impl AccessIssuerImpl {
             jti: Uuid::new_v4().to_string(),
             exp: (now + self.access_ttl).timestamp(),
             derived_from: refresh_claims.jti.clone(),
-            payload: (&prev_csrf_claims.payload).into(),
+            payload: (&user_payload).into(),
         };
 
-        let csrf_claims = UserCsrfClaims {
-            jti: Uuid::new_v4().to_string(),
-            exp: (now + self.access_ttl).timestamp(),
-            derived_from: access_claims.jti.clone(),
-            payload: prev_csrf_claims.payload,
-        };
-
+        let csrf_claims = self.generate_csrf_token(&access_claims, user_payload);
         Ok(IssuedClaims {
-            refresh_token: refresh_claims,
+            refresh_claims,
             access_token: self.access_isser.generate_jwt(&access_claims)?,
             csrf_token: self.csrf_isser.generate_jwt(&csrf_claims)?,
         })
@@ -534,34 +513,6 @@ impl AccessIssuer {
         }
     }
 
-    pub async fn generate_jwt(&self, claims: &UserAccessClaims) -> anyhow::Result<String> {
-        self.isser.read().await.generate_jwt(claims)
-    }
-
-    pub async fn verify_jwt_access(
-        &self,
-        access_token: &str,
-        validation: Option<Validation>,
-    ) -> anyhow::Result<UserAccessClaims> {
-        self.isser
-            .read()
-            .await
-            .verify_jwt_access(access_token, validation)
-    }
-
-    /// JWT 토큰 검증 (유효성, 만료 등)
-    pub async fn verify_jwt_pair(
-        &self,
-        access_token: &str,
-        csrf_token: &str,
-        validation: Option<Validation>,
-    ) -> anyhow::Result<UserCsrfClaims> {
-        self.isser
-            .read()
-            .await
-            .verify_jwt_pair(access_token, csrf_token, validation)
-    }
-
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
     pub async fn login(
         &self,
@@ -579,12 +530,68 @@ impl AccessIssuer {
 
     pub async fn refresh_access_token(
         &self,
+        prev_access_claims: &UserAccessClaims,
         prev_refresh_clams: UserRefreshClaims,
-        prev_csrf_claims: UserCsrfClaims,
+        user_payload: UserPayload,
     ) -> anyhow::Result<IssuedClaims> {
+        self.isser.read().await.refresh_access_token(
+            &prev_access_claims,
+            prev_refresh_clams,
+            user_payload,
+        )
+    }
+
+    pub async fn export_access_claims_from(
+        &self,
+        cookies: &Cookies,
+        validation: Option<Validation>,
+    ) -> Result<UserAccessClaims, HttpError> {
+        let access_token = cookies
+            .get(AccessIssuer::get_cookie_name())
+            .ok_or(HttpError::MissingJwtToken)?;
+        let access_claims = self
+            .isser
+            .read()
+            .await
+            .verify_jwt_access(access_token.value(), validation)
+            .map_err(|e| HttpError::InvalidJwt(e))?;
+        Ok(access_claims)
+    }
+
+    pub async fn export_claims_pair_from_bearer(
+        &self,
+        cookies: &Cookies,
+        csrf_token: &str,
+        validation: Option<Validation>,
+    ) -> Result<ClaimsPair, HttpError> {
+        let access_token = cookies
+            .get(AccessIssuer::get_cookie_name())
+            .ok_or(HttpError::MissingJwtToken)?;
+
         self.isser
             .read()
             .await
-            .refresh_access_token(prev_refresh_clams, prev_csrf_claims)
+            .verify_jwt_pair(access_token.value(), csrf_token, validation)
+            .map_err(|e| HttpError::InvalidJwt(e))
+    }
+
+    pub async fn export_claims_pair_from(
+        &self,
+        cookies: &Cookies,
+        headers: &HeaderMap,
+        validation: Option<Validation>,
+    ) -> Result<ClaimsPair, HttpError> {
+        let authorization = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|header| header.to_str().ok())
+            .ok_or(HttpError::MissingJwtToken)?;
+        let csrf_token = authorization
+            .strip_prefix("Bearer ")
+            .ok_or(HttpError::InvalidJwt(anyhow::anyhow!(
+                "Invalid Authorization header format"
+            )))?;
+
+        self.export_claims_pair_from_bearer(cookies, csrf_token, validation)
+            .await
     }
 }
