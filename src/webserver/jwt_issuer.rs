@@ -39,7 +39,7 @@ pub struct UserPayload {
     pub nick: String,
 
     pub login_at: i64,
-    pub created_at: i64,
+    pub payload_creation: i64,
 }
 
 impl Serialize for UserPayload {
@@ -82,7 +82,7 @@ impl From<&UserPayload> for AccessPayload {
     fn from(payload: &UserPayload) -> Self {
         Self {
             uid: payload.uid,
-            created_at: payload.created_at,
+            created_at: payload.payload_creation,
         }
     }
 }
@@ -372,7 +372,7 @@ impl AccessIssuerImpl {
             role,
             nick,
             login_at: now.timestamp_millis(),
-            created_at: now.timestamp_millis(),
+            payload_creation: now.timestamp_millis(),
         };
         let access_payload = AccessPayload {
             uid,
@@ -435,7 +435,7 @@ impl AccessIssuerImpl {
         }
 
         let now = Utc::now();
-        user_payload.created_at = now.timestamp_millis();
+        user_payload.payload_creation = now.timestamp_millis();
         let refresh_claims = UserRefreshClaims {
             jti: Uuid::new_v4().to_string(),
             exp: (now + self.refresh_ttl).timestamp(),
