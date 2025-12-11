@@ -50,13 +50,11 @@ impl Inner {
             .ok_or(anyhowln!("cannot find tag : {}", tag))?;
         let (ws, restapi) = match key.exchange.as_str() {
             "bybit" => {
-                let mut ws = ConnectParams::default();
-                ws.url = if key.is_testnet {
+                let ws = ConnectParams::from_str(if key.is_testnet {
                     "wss://stream-testnet.bybit.com"
                 } else {
                     "wss://stream.bybit.com"
-                }
-                .to_string();
+                })?;
                 let mut restapi = RestAPIParam::default();
                 restapi.url = if key.is_testnet {
                     "https://api-testnet.bybit.com"
@@ -67,8 +65,7 @@ impl Inner {
                 Some((ws, restapi))
             }
             "bithumb" => {
-                let mut ws = ConnectParams::default();
-                ws.url = "wss://ws-api.bithumb.com/websocket".to_string();
+                let ws = ConnectParams::from_str("wss://ws-api.bithumb.com/websocket")?;
                 let mut restapi = RestAPIParam::default();
                 restapi.url = "https://api.bithumb.com".to_string();
                 Some((ws, restapi))

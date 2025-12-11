@@ -1179,7 +1179,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
 
                 if socket
                     .get_param_as_connect()
-                    .map(|param| param.url.contains("private"))
+                    .map(|param| param.url.path().contains("/private"))
                     .unwrap_or(false)
                 {
                     let expires = Utc::now().timestamp_millis() + 5000;
@@ -1217,11 +1217,14 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                         let path = socket
                             .get_param_as_connect()
                             .and_then(|param| {
-                                let url = url::Url::parse(&param.url).ok()?;
-                                let last = url
-                                    .path_segments()
-                                    .and_then(|seg| seg.last())
-                                    .map(|str| str.to_string());
+                                let last = param.url.path().rsplit("/").next().and_then(|str| {
+                                    if str.is_empty() {
+                                        None
+                                    } else {
+                                        Some(str.to_string())
+                                    }
+                                });
+
                                 last
                             })
                             .ok_or(anyhowln!("occur error for parsed url in bybit"))?;
@@ -1243,8 +1246,9 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         group: &String,
         _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<ConnectParams> {
-        let mut param = ConnectParams::default();
-        param.url = format!("{}{}", ctx.param.websocket.url, group);
+        let mut param = ctx.param.websocket.clone();
+        param.url = format!("{}{}", ctx.param.websocket.url.to_string(), group)
+            .parse::<axum::http::Uri>()?;
         Ok(param)
     }
 

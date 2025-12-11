@@ -117,7 +117,7 @@ impl Inner {
                     "opened websocket(total:{}, id:{}) : {}",
                     self.alived_cnt.read().await,
                     websocket.get_uuid(),
-                    websocket.get_connected_url().unwrap_or_default()
+                    websocket.get_connected_url_str().unwrap_or_default()
                 );
             }
             Signal::Closed => {
@@ -126,7 +126,7 @@ impl Inner {
                     "closed websocket(total:{}: id:{}) : {}",
                     self.alived_cnt.read().await,
                     websocket.get_uuid(),
-                    websocket.get_connected_url().unwrap_or_default()
+                    websocket.get_connected_url_str().unwrap_or_default()
                 );
             }
             _ => {}
@@ -144,7 +144,7 @@ impl Inner {
                 cassry::info!(
                     "authorized websocket(uuid:{}, url:{})",
                     uuid,
-                    websocket.get_connected_url().unwrap_or_default()
+                    websocket.get_connected_url_str().unwrap_or_default()
                 );
 
                 if let Some(conn) = self.find_websocket_by_id(&uuid).await {
@@ -152,7 +152,7 @@ impl Inner {
                         cassry::error!(
                             "rejected authorize websocket(uuid:{}, url:{})",
                             uuid,
-                            websocket.get_connected_url().unwrap_or_default()
+                            websocket.get_connected_url_str().unwrap_or_default()
                         );
                         websocket.close(None).await?;
                     }
@@ -162,7 +162,7 @@ impl Inner {
                         cassry::warn!(
                             "websocket is already authorized(uuid:{}, url:{})",
                             uuid,
-                            websocket.get_connected_url().unwrap_or_default()
+                            websocket.get_connected_url_str().unwrap_or_default()
                         );
                     }
                     conn.is_authorized = *success;
@@ -186,7 +186,7 @@ impl Inner {
                         cassry::info!(
                             "trying to subscribes by stored list(uuid:{}, url:{}): {}",
                             uuid,
-                            websocket.get_connected_url().unwrap_or_default(),
+                            websocket.get_connected_url_str().unwrap_or_default(),
                             subs
                         );
                         self.interface
@@ -197,7 +197,7 @@ impl Inner {
                     cassry::error!(
                         "cannot find subscribing list by id(uuid:{}, url:{})",
                         uuid,
-                        websocket.get_connected_url().unwrap_or_default()
+                        websocket.get_connected_url_str().unwrap_or_default()
                     );
                     websocket.close(None).await?;
                 }
@@ -296,7 +296,7 @@ impl ExchangeSocket {
 
             cassry::info!(
                 "websocket is disconnected : url({}), group({}), uuid({})",
-                conn.websocket.get_connected_url().unwrap_or_default(),
+                conn.websocket.get_connected_url_str().unwrap_or_default(),
                 conn.group,
                 conn.websocket.get_uuid()
             );
@@ -311,14 +311,14 @@ impl ExchangeSocket {
                 Err(e) => {
                     conn.retryed += 1;
                     cassry::error!("occurred an error by making websocket param : reason({}), retryed({}), url({}), group({}), uuid({})", 
-                    e, conn.retryed, conn.websocket.get_connected_url().unwrap_or_default(), conn.group, conn.websocket.get_uuid());
+                    e, conn.retryed, conn.websocket.get_connected_url_str().unwrap_or_default(), conn.group, conn.websocket.get_uuid());
                     continue;
                 }
             };
 
             cassry::info!(
                 "Recovering the disconnected websocket : url({}) group({}) uuid({})",
-                conn.websocket.get_connected_url().unwrap_or_default(),
+                conn.websocket.get_connected_url_str().unwrap_or_default(),
                 conn.group,
                 conn.websocket.get_uuid()
             );
@@ -329,7 +329,7 @@ impl ExchangeSocket {
                     let prev = conn.update_websocket(websocket);
                     cassry::info!(
                         "updated websocket : url({}), group({}), uuid({}->{})",
-                        conn.websocket.get_connected_url().unwrap_or_default(),
+                        conn.websocket.get_connected_url_str().unwrap_or_default(),
                         conn.group,
                         prev.get_uuid(),
                         uuid
@@ -341,7 +341,7 @@ impl ExchangeSocket {
                 Err(e) => {
                     conn.retryed += 1;
                     cassry::error!("occurred an error by making websocket param : reason({}), retryed({}), url({}), group({}), uuid({})", 
-                    e, conn.retryed, conn.websocket.get_connected_url().unwrap_or_default(), conn.group, conn.websocket.get_uuid());
+                    e, conn.retryed, conn.websocket.get_connected_url_str().unwrap_or_default(), conn.group, conn.websocket.get_uuid());
                     continue;
                 }
             };

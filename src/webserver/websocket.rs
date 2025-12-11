@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
-use serde_with::{serde_as, DurationSecondsWithFrac};
+use serde_with::{serde_as, DisplayFromStr, DurationSecondsWithFrac};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,10 @@ use tokio::sync::{
     RwLock,
 };
 
-use axum::extract::ws::{Message as AxumMessage, WebSocket as AxumWebsocket};
+use axum::{
+    extract::ws::{Message as AxumMessage, WebSocket as AxumWebsocket},
+    http::Uri,
+};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
 use cassry::{chrono::DateTime, futures::Sink, *};
@@ -122,7 +125,8 @@ pub enum Signal {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectParams {
-    pub url: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub url: Uri,
     pub protocol: String,
     pub header: HashMap<String, String>,
 
@@ -132,10 +136,22 @@ pub struct ConnectParams {
     pub ping_interval: std::time::Duration,
 }
 
+impl ConnectParams {
+    pub fn from_str(url: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            url: Uri::from_str(url)?,
+            protocol: Default::default(),
+            header: Default::default(),
+            eject: chrono::Duration::seconds(5),
+            ping_interval: std::time::Duration::from_secs(60),
+        })
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptParams {
-    pub addr : std::net::SocketAddr,
+    pub addr: std::net::SocketAddr,
     // sassry는 기본적으로 chrono를 채택하여 사용
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub eject: chrono::Duration,
@@ -166,22 +182,10 @@ impl WebsocketParams {
         }
     }
 
-    pub fn get_connected_url(&self) -> Option<&str> {
+    pub fn get_connected_url(&self) -> Option<&Uri> {
         match self {
             WebsocketParams::Connect(params) => Some(&params.url),
             _ => None,
-        }
-    }
-}
-
-impl Default for ConnectParams {
-    fn default() -> Self {
-        Self {
-            url: Default::default(),
-            protocol: Default::default(),
-            header: Default::default(),
-            eject: chrono::Duration::seconds(5),
-            ping_interval: std::time::Duration::from_secs(60),
         }
     }
 }
@@ -431,8 +435,7 @@ impl ConnectionReal {
             let (stream, _) = tokio_tungstenite::connect_async(request).await?;
             cassry::debug!("success for websocket : {}", &params.url);
             Ok(ConnectionReal::init(param, stream, f))
-        }
-        else {
+        } else {
             Err(anyhowln!("invalid websocket params"))
         }
     }
@@ -505,25 +508,17 @@ impl Websocket {
         F: Fn(Websocket, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let conn = if param.url.is_empty() {
-            Websocket::new(
-                Arc::new(WebsocketParams::Connect(param)),
-                ConnectionNull::new(),
-            )
-        } else {
-            let param = Arc::new(WebsocketParams::Connect(param));
-            let ctx = (param.clone(), Arc::new(f));
-            let conn = ConnectionReal::connect(param.clone(), move |conn, signal| {
-                let (param, callback) = ctx.clone();
-                let ws = Self::new(param, conn);
-                async move {
-                    callback(ws, signal).await;
-                }
-            })
-            .await?;
-            Websocket::new(param, conn)
-        };
-        Ok(conn)
+        let param = Arc::new(WebsocketParams::Connect(param));
+        let ctx = (param.clone(), Arc::new(f));
+        let conn = ConnectionReal::connect(param.clone(), move |conn, signal| {
+            let (param, callback) = ctx.clone();
+            let ws = Self::new(param, conn);
+            async move {
+                callback(ws, signal).await;
+            }
+        })
+        .await?;
+        Ok(Websocket::new(param, conn))
     }
 
     pub async fn send(&self, message: Message) -> anyhow::Result<()> {
@@ -566,8 +561,12 @@ impl Websocket {
         }
     }
 
-    pub fn get_connected_url(&self) -> Option<&str> {
+    pub fn get_connected_url(&self) -> Option<&Uri> {
         self.param.get_connected_url()
+    }
+
+    pub fn get_connected_url_str(&self) -> Option<String> {
+        self.get_connected_url().map(|url| url.to_string())
     }
 
     pub fn get_created(&self) -> DateTime<Utc> {

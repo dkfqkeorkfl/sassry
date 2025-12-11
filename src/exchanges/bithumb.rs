@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::super::exchange::*;
 use super::super::webserver::websocket::*;
+use axum::http::Uri;
 use cassry::tokio::sync::RwLock;
 use cassry::{float, secrecy::ExposeSecret, *};
 
@@ -1271,24 +1272,21 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         group: &String,
         _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<ConnectParams> {
+        let mut params = ctx.param.websocket.clone();
         if group == "/v1/private" {
             let (_, jwt) = RestAPI::make_jwt(&ctx.param.key, &Default::default())?;
-            let mut param = ConnectParams::default();
-            param.url = format!("{}{}", ctx.param.websocket.url, group);
-            param.header.insert(
+            params.url = format!("{}{}", ctx.param.websocket.url.to_string(), group).parse::<Uri>()?;
+            params.header.insert(
                 reqwest::header::AUTHORIZATION.to_string(),
                 format!("Bearer {}", jwt),
             );
-            Ok(param)
         } else if let Some((path, _)) = group.split_once("?") {
-            let mut param = ConnectParams::default();
-            param.url = format!("{}{}", ctx.param.websocket.url, path);
-            Ok(param)
+            params.url = format!("{}{}", ctx.param.websocket.url.to_string(), path).parse::<Uri>()?;
         } else {
-            let mut param = ConnectParams::default();
-            param.url = format!("{}{}", ctx.param.websocket.url, group);
-            Ok(param)
+            params.url = format!("{}{}", ctx.param.websocket.url.to_string(), group).parse::<Uri>()?;
         }
+
+        Ok(params)
     }
 
     async fn make_group_and_key(&self, param: &SubscribeParam) -> Option<(String, String)> {
