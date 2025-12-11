@@ -170,7 +170,7 @@ where
                 .ok_or(HttpError::MissingJwtToken)?;
             let jwt_manager = parts
                 .extensions
-                .get::<AccessIssuer>()
+                .get::<TokenIssuer>()
                 .ok_or(anyhow::anyhow!("JwtManager not found"))?;
 
             let mut validation = Validation::default();
@@ -204,7 +204,7 @@ where
                 .ok_or(HttpError::MissingJwtToken)?;
             let jwt_manager = parts
                 .extensions
-                .get::<AccessIssuer>()
+                .get::<TokenIssuer>()
                 .ok_or(anyhow::anyhow!("JwtManager not found"))?;
 
             let mut validation = Validation::default();
@@ -274,7 +274,7 @@ impl JwtIssuer {
     }
 }
 
-pub struct AccessIssuerImpl {
+pub struct TokenIssuerImpl {
     name: String,
     access_isser: JwtIssuer,
     csrf_isser: JwtIssuer,
@@ -282,7 +282,7 @@ pub struct AccessIssuerImpl {
     refresh_ttl: chrono::Duration,
 }
 
-impl AccessIssuerImpl {
+impl TokenIssuerImpl {
     pub fn get_name(&self) -> &String {
         &self.name
     }
@@ -467,11 +467,11 @@ impl AccessIssuerImpl {
 }
 
 #[derive(Clone)]
-pub struct AccessIssuer {
-    isser: RwArc<AccessIssuerImpl>,
+pub struct TokenIssuer {
+    isser: RwArc<TokenIssuerImpl>,
 }
 
-impl AccessIssuer {
+impl TokenIssuer {
     pub async fn get_name(&self) -> String {
         self.isser.read().await.get_name().clone()
     }
@@ -508,7 +508,7 @@ impl AccessIssuer {
     ) -> Self {
         Self {
             isser: Arc::new(
-                AccessIssuerImpl::new(name, access_secret, csrf_secret, access_ttl, refresh_ttl)
+                TokenIssuerImpl::new(name, access_secret, csrf_secret, access_ttl, refresh_ttl)
                     .into(),
             ),
         }
@@ -548,7 +548,7 @@ impl AccessIssuer {
         validation: Option<Validation>,
     ) -> Result<UserAccessClaims, HttpError> {
         let access_token = cookies
-            .get(AccessIssuer::get_cookie_name())
+            .get(TokenIssuer::get_cookie_name())
             .ok_or(HttpError::MissingJwtToken)?;
         let access_claims = self
             .isser
@@ -566,7 +566,7 @@ impl AccessIssuer {
         validation: Option<Validation>,
     ) -> Result<ClaimsPair, HttpError> {
         let access_token = cookies
-            .get(AccessIssuer::get_cookie_name())
+            .get(TokenIssuer::get_cookie_name())
             .ok_or(HttpError::MissingJwtToken)?;
 
         self.isser

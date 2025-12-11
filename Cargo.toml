@@ -25,7 +25,7 @@ thiserror = "2"
 async-trait = "0.1"
 derive_more = { version = "2", features = ["full"] }
 
-# tokio stream
+# tokio stream - tokio-tungstenite를 쓰기 위해서는 rustls에서 ring이나 aws-lc-rs 피쳐를 활성해서 Provider를 설정해야 함
 tokio-tungstenite = { version = "0.28.0", features = [
     "__rustls-tls",
     "handshake",
@@ -34,12 +34,12 @@ tokio-tungstenite = { version = "0.28.0", features = [
 tokio-stream = "0.1"
 tokio-util = { version = "0.7.8", features = ["codec"] }
 
-# webserver
+# webserver 
 axum = { version = "0.8", features = ["form", "json", "tokio", "ws", "macros"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }
 
-# 타워 세션은 사실 main에만 있어도 됨, errors 에서 사용하지만 claims에서 사용하므로 여기에 있음
+# 타워 라이브러리 - Axum의 미들웨어 설정에 사용
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["full"] }
 tower_governor = "0.8"
