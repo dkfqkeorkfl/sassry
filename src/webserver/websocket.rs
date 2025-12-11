@@ -135,6 +135,7 @@ pub struct ConnectParams {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptParams {
+    pub addr : std::net::SocketAddr,
     // sassry는 기본적으로 chrono를 채택하여 사용
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub eject: chrono::Duration,
