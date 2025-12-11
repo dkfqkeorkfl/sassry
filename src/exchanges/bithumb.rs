@@ -1270,10 +1270,10 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         ctx: &ExchangeContextPtr,
         group: &String,
         _request: &Option<(SubscribeType, serde_json::Value)>,
-    ) -> anyhow::Result<WebsocketParam> {
+    ) -> anyhow::Result<ConnectParams> {
         if group == "/v1/private" {
             let (_, jwt) = RestAPI::make_jwt(&ctx.param.key, &Default::default())?;
-            let mut param = WebsocketParam::default();
+            let mut param = ConnectParams::default();
             param.url = format!("{}{}", ctx.param.websocket.url, group);
             param.header.insert(
                 reqwest::header::AUTHORIZATION.to_string(),
@@ -1281,11 +1281,11 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
             );
             Ok(param)
         } else if let Some((path, _)) = group.split_once("?") {
-            let mut param = WebsocketParam::default();
+            let mut param = ConnectParams::default();
             param.url = format!("{}{}", ctx.param.websocket.url, path);
             Ok(param)
         } else {
-            let mut param = WebsocketParam::default();
+            let mut param = ConnectParams::default();
             param.url = format!("{}{}", ctx.param.websocket.url, group);
             Ok(param)
         }

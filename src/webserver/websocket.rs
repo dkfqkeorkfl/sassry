@@ -14,11 +14,7 @@ use tokio::sync::{
 use axum::extract::ws::{Message as AxumMessage, WebSocket as AxumWebsocket};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
-use cassry::{
-    chrono::DateTime,
-    futures::Sink,
-    *,
-};
+use cassry::{chrono::DateTime, futures::Sink, *};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Message {
@@ -115,7 +111,6 @@ impl Into<TungsteniteMessage> for Message {
     }
 }
 
-
 #[derive(Debug)]
 pub enum Signal {
     Opened,
@@ -126,7 +121,7 @@ pub enum Signal {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebsocketParam {
+pub struct ConnectParams {
     pub url: String,
     pub protocol: String,
     pub header: HashMap<String, String>,
@@ -134,17 +129,58 @@ pub struct WebsocketParam {
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub eject: chrono::Duration,
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
-    pub ping_interval: chrono::Duration,
+    pub ping_interval: std::time::Duration,
 }
 
-impl Default for WebsocketParam {
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptParams {
+    // sassry는 기본적으로 chrono를 채택하여 사용
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
+    pub eject: chrono::Duration,
+
+    // tokio는 std::time::Duration을 채택하여 사용
+    #[serde_as(as = "DurationSecondsWithFrac<String>")]
+    pub ping_interval: std::time::Duration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WebsocketParams {
+    Connect(ConnectParams),
+    Accept(AcceptParams),
+}
+
+impl WebsocketParams {
+    pub fn get_eject(&self) -> &chrono::Duration {
+        match self {
+            WebsocketParams::Connect(params) => &params.eject,
+            WebsocketParams::Accept(params) => &params.eject,
+        }
+    }
+
+    pub fn get_ping_interval(&self) -> &std::time::Duration {
+        match self {
+            WebsocketParams::Connect(params) => &params.ping_interval,
+            WebsocketParams::Accept(params) => &params.ping_interval,
+        }
+    }
+
+    pub fn get_connected_url(&self) -> Option<&str> {
+        match self {
+            WebsocketParams::Connect(params) => Some(&params.url),
+            _ => None,
+        }
+    }
+}
+
+impl Default for ConnectParams {
     fn default() -> Self {
         Self {
             url: Default::default(),
             protocol: Default::default(),
             header: Default::default(),
             eject: chrono::Duration::seconds(5),
-            ping_interval: chrono::Duration::minutes(1),
+            ping_interval: std::time::Duration::from_secs(60),
         }
     }
 }
@@ -160,7 +196,7 @@ pub trait ConnectionItf: Send + Sync + 'static {
 
 //Behavior
 struct ConnectionReal {
-    param: Arc<WebsocketParam>,
+    param: Arc<WebsocketParams>,
     sender: UnboundedSender<Message>,
     is_connect: RwArc<bool>,
 
@@ -178,7 +214,7 @@ impl ConnectionItf for ConnectionReal {
             _ => {
                 cassry::trace!(
                     "sending message using websocket({}) : {:?}",
-                    &self.param.url,
+                    &self.get_uuid(),
                     message
                 );
             }
@@ -206,6 +242,10 @@ impl ConnectionItf for ConnectionReal {
 }
 
 impl ConnectionReal {
+    pub fn get_param(&self) -> &WebsocketParams {
+        &self.param
+    }
+
     pub async fn latency(&self) -> chrono::Duration {
         let send = *self.sendping.read().await;
         let recv = *self.recvping.read().await;
@@ -234,11 +274,7 @@ impl ConnectionReal {
         }
     }
 
-    fn init<S, M, E, F, Fut>(
-        param: Arc<WebsocketParam>,
-        stream: S,
-        callback: F,
-    ) -> anyhow::Result<Arc<Self>>
+    fn init<S, M, E, F, Fut>(param: Arc<WebsocketParams>, stream: S, callback: F) -> Arc<Self>
     where
         S: futures::Stream<Item = Result<M, E>> + Sink<M, Error = E> + Unpin + Send + 'static,
         M: Send + 'static,
@@ -253,7 +289,6 @@ impl ConnectionReal {
         let (sender, mut receiver) = unbounded_channel::<Message>();
 
         let now = Utc::now();
-        let ping_interval = param.ping_interval.to_std()?;
         let is_connected = Arc::new(RwLock::new(true));
         let ws = Arc::from(Self {
             uuid: uuid::Uuid::new_v4().to_string(),
@@ -267,14 +302,18 @@ impl ConnectionReal {
             recvping: RwLock::new(now),
         });
 
-        let cloned_is_connected = is_connected.clone();
-        let wpt_ws = Arc::downgrade(&ws);
+        let ctx = (
+            Arc::downgrade(&ws),
+            is_connected.clone(),
+            ws.get_param().get_ping_interval().clone(),
+        );
         tokio::spawn(async move {
+            let (wpt_ws, is_connected, ping_interval) = ctx;
             tokio::time::sleep(ping_interval.clone()).await;
 
-            while *cloned_is_connected.read().await {
+            while *is_connected.read().await {
                 let result = if let Some(ptr) = wpt_ws.upgrade() {
-                    if ptr.latency().await > ptr.param.eject {
+                    if ptr.latency().await > *ptr.get_param().get_eject() {
                         Err(anyhowln!("occur eject for ping test"))
                     } else {
                         ptr.ping().await
@@ -286,7 +325,7 @@ impl ConnectionReal {
                 if let Err(e) = result {
                     cassry::info!("{}", e.to_string());
 
-                    let is_connected = cloned_is_connected.read().await;
+                    let is_connected = is_connected.read().await;
                     let result = if *is_connected {
                         sender.send(Message::Close(None))
                     } else {
@@ -301,27 +340,27 @@ impl ConnectionReal {
             }
         });
 
-        let cloned_is_connected = is_connected.clone();
-        let wpt_ws = Arc::downgrade(&ws);
-        let cloned_callback = callback.clone();
+        let ctx = (Arc::downgrade(&ws), is_connected.clone(), callback.clone());
         tokio::spawn(async move {
+            let (wpt_ws, is_connected, callback) = ctx;
             while let Some(message) = receiver
                 .recv()
                 .await
                 .filter(|msg| msg.is_close() || wpt_ws.upgrade().is_some())
             {
-                if *cloned_is_connected.read().await == false {
+                if *is_connected.read().await == false {
                     break;
                 } else if let Err(e) = write_half.send(message.into()).await {
                     if let Some(spt) = wpt_ws.upgrade() {
-                        cloned_callback(spt, Signal::Error(e.into())).await;
+                        callback(spt, Signal::Error(e.into())).await;
                     }
                 }
             }
         });
 
-        let wpt_ws = Arc::downgrade(&ws);
+        let ctx = (Arc::downgrade(&ws), callback);
         tokio::spawn(async move {
+            let (wpt_ws, callback) = ctx;
             if let Some(spt) = wpt_ws.upgrade() {
                 callback(spt, Signal::Opened).await;
             }
@@ -363,14 +402,10 @@ impl ConnectionReal {
             }
         });
 
-        Ok(ws)
+        ws
     }
 
-    fn accept<F, Fut>(
-        param: Arc<WebsocketParam>,
-        stream: AxumWebsocket,
-        f: F,
-    ) -> anyhow::Result<Arc<Self>>
+    fn accept<F, Fut>(param: Arc<WebsocketParams>, stream: AxumWebsocket, f: F) -> Arc<Self>
     where
         F: Fn(Arc<dyn ConnectionItf>, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -378,22 +413,27 @@ impl ConnectionReal {
         ConnectionReal::init(param, stream, f)
     }
 
-    pub async fn connect<F, Fut>(param: Arc<WebsocketParam>, f: F) -> anyhow::Result<Arc<Self>>
+    pub async fn connect<F, Fut>(param: Arc<WebsocketParams>, f: F) -> anyhow::Result<Arc<Self>>
     where
         F: Fn(Arc<dyn ConnectionItf>, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        cassry::debug!("connecting websocket : {}", &param.url);
-        let mut request = param.url.clone().into_client_request()?;
-        for (key, value) in param.header.iter() {
-            let name = axum::http::HeaderName::from_str(key.clone().as_str())?;
-            let value = axum::http::HeaderValue::from_str(value.clone().as_str())?;
-            request.headers_mut().insert(name, value);
+        if let WebsocketParams::Connect(params) = param.as_ref() {
+            cassry::debug!("connecting websocket : {}", &params.url);
+            let mut request = params.url.clone().into_client_request()?;
+            for (key, value) in params.header.iter() {
+                let name = axum::http::HeaderName::from_str(key.clone().as_str())?;
+                let value = axum::http::HeaderValue::from_str(value.clone().as_str())?;
+                request.headers_mut().insert(name, value);
+            }
+
+            let (stream, _) = tokio_tungstenite::connect_async(request).await?;
+            cassry::debug!("success for websocket : {}", &params.url);
+            Ok(ConnectionReal::init(param, stream, f))
         }
-
-        let (stream, _) = tokio_tungstenite::connect_async(request).await?;
-        cassry::debug!("success for websocket : {}", &param.url);
-        ConnectionReal::init(param, stream, f)
+        else {
+            Err(anyhowln!("invalid websocket params"))
+        }
     }
 }
 
@@ -431,57 +471,52 @@ impl ConnectionItf for ConnectionNull {
 #[derive(Clone)]
 pub struct Websocket {
     conn: Arc<dyn ConnectionItf>,
-    param: Arc<WebsocketParam>,
+    param: Arc<WebsocketParams>,
 }
 
 impl Websocket {
-    fn new(param: Arc<WebsocketParam>, conn: Arc<dyn ConnectionItf>) -> Self {
+    fn new(param: Arc<WebsocketParams>, conn: Arc<dyn ConnectionItf>) -> Self {
         Self {
             conn: conn,
             param: param,
         }
     }
 
-    pub fn accept<F, Fut>(
-        param: WebsocketParam,
-        stream: AxumWebsocket,
-        f: F,
-    ) -> anyhow::Result<Self>
+    pub fn accept<F, Fut>(param: AcceptParams, stream: AxumWebsocket, f: F) -> anyhow::Result<Self>
     where
         F: Fn(Websocket, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let callback = Arc::new(f);
-        let param = Arc::new(param);
-        let cloned_param = param.clone();
+        let param = Arc::new(WebsocketParams::Accept(param));
+        let ctx = (param.clone(), Arc::new(f));
         let conn = ConnectionReal::accept(param.clone(), stream, move |conn, signal| {
-            let param = cloned_param.clone();
-            let cloned = callback.clone();
+            let (param, callback) = ctx.clone();
             let ws = Self::new(param, conn);
             async move {
-                cloned(ws, signal).await;
+                callback(ws, signal).await;
             }
-        })?;
+        });
         Ok(Websocket::new(param, conn))
     }
 
-    pub async fn connect<F, Fut>(param: WebsocketParam, f: F) -> anyhow::Result<Self>
+    pub async fn connect<F, Fut>(param: ConnectParams, f: F) -> anyhow::Result<Self>
     where
         F: Fn(Websocket, Signal) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let callback = Arc::new(f);
-        let param = Arc::new(param);
         let conn = if param.url.is_empty() {
-            Websocket::new(param, ConnectionNull::new())
+            Websocket::new(
+                Arc::new(WebsocketParams::Connect(param)),
+                ConnectionNull::new(),
+            )
         } else {
-            let cloned_param = param.clone();
+            let param = Arc::new(WebsocketParams::Connect(param));
+            let ctx = (param.clone(), Arc::new(f));
             let conn = ConnectionReal::connect(param.clone(), move |conn, signal| {
-                let ws = Self::new(cloned_param.clone(), conn);
-                let cloned = callback.clone();
-
+                let (param, callback) = ctx.clone();
+                let ws = Self::new(param, conn);
                 async move {
-                    cloned(ws, signal).await;
+                    callback(ws, signal).await;
                 }
             })
             .await?;
@@ -518,8 +553,20 @@ impl Websocket {
         self.conn.is_connected().await
     }
 
-    pub fn get_param(&self) -> Option<Arc<WebsocketParam>> {
-        Some(self.param.clone())
+    pub fn get_param(&self) -> Arc<WebsocketParams> {
+        self.param.clone()
+    }
+
+    pub fn get_param_as_connect(&self) -> Option<&ConnectParams> {
+        if let WebsocketParams::Connect(params) = self.param.as_ref() {
+            Some(params)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_connected_url(&self) -> Option<&str> {
+        self.param.get_connected_url()
     }
 
     pub fn get_created(&self) -> DateTime<Utc> {

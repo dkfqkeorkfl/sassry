@@ -1908,7 +1908,7 @@ impl Default for ExchangeConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExchangeParam {
-    pub websocket: WebsocketParam,
+    pub websocket: ConnectParams,
     pub restapi: RestAPIParam,
     pub key: Arc<ExchangeKey>,
     pub config: ExchangeConfig,

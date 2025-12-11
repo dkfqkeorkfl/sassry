@@ -1178,9 +1178,9 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 });
 
                 if socket
-                    .get_param()
-                    .filter(|param| param.url.contains("private"))
-                    .is_some()
+                    .get_param_as_connect()
+                    .map(|param| param.url.contains("private"))
+                    .unwrap_or(false)
                 {
                     let expires = Utc::now().timestamp_millis() + 5000;
                     let payload = format!("GET/realtime{}", expires);
@@ -1215,7 +1215,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                         ))
                     } else if let Some(str) = json["topic"].as_str().map(String::from) {
                         let path = socket
-                            .get_param()
+                            .get_param_as_connect()
                             .and_then(|param| {
                                 let url = url::Url::parse(&param.url).ok()?;
                                 let last = url
@@ -1242,8 +1242,8 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         ctx: &ExchangeContextPtr,
         group: &String,
         _request: &Option<(SubscribeType, serde_json::Value)>,
-    ) -> anyhow::Result<WebsocketParam> {
-        let mut param = WebsocketParam::default();
+    ) -> anyhow::Result<ConnectParams> {
+        let mut param = ConnectParams::default();
         param.url = format!("{}{}", ctx.param.websocket.url, group);
         Ok(param)
     }
