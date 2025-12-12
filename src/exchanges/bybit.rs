@@ -771,8 +771,8 @@ impl exchange::RestApiTrait for RestAPI {
                         .and_then(|v| v.as_object_mut())
                         .unwrap();
                     let ap = to_decimal_with_json(&ainfo["basePrecision"])?;
-                    let amin = to_decimal_with_json(&ainfo["maxOrderQty"])?;
-                    let amax = to_decimal_with_json(&ainfo["minOrderQty"])?;
+                    let amin = to_decimal_with_json(&ainfo["minOrderQty"])?;
+                    let amax = to_decimal_with_json(&ainfo["maxOrderQty"])?;
                     ExtDatas {
                         pp,
                         plimit: [Decimal::MIN, Decimal::MAX],

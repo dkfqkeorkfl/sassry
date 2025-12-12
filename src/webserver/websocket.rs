@@ -137,7 +137,6 @@ impl ConnectParams {
     pub fn add_path(&mut self, paths: std::vec::Vec<&str>) -> anyhow::Result<&mut Self> {
         if let Ok(mut path_segments) = self.url.path_segments_mut() {
             for segment in paths {
-                println!("segment: {}", segment);
                 path_segments.push(segment);
             }
         } else {

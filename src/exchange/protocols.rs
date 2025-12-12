@@ -149,6 +149,31 @@ impl MarketKind {
             MarketKind::InversePerpetual(s) => s.as_str(),
         }
     }
+
+    pub fn kind(&self) -> &str {
+        match self {
+            MarketKind::Spot(_) => "Spot",
+            MarketKind::Margin(_) => "Margin",
+            MarketKind::Derivatives(_) => "Derivatives",
+            MarketKind::LinearFuture(_) => "LinearFuture",
+            MarketKind::LinearPerpetual(_) => "LinearPerpetual",
+            MarketKind::InverseFuture(_) => "InverseFuture",
+            MarketKind::InversePerpetual(_) => "InversePerpetual",
+        }
+    }
+
+    pub fn from_str(kind: &str, symbol: &str) -> anyhow::Result<Self> {
+        match kind {
+            "Spot" => Ok(MarketKind::Spot(symbol.to_string())),
+            "Margin" => Ok(MarketKind::Margin(symbol.to_string())),
+            "Derivatives" => Ok(MarketKind::Derivatives(symbol.to_string())),
+            "LinearFuture" => Ok(MarketKind::LinearFuture(symbol.to_string())),
+            "LinearPerpetual" => Ok(MarketKind::LinearPerpetual(symbol.to_string())),
+            "InverseFuture" => Ok(MarketKind::InverseFuture(symbol.to_string())),
+            "InversePerpetual" => Ok(MarketKind::InversePerpetual(symbol.to_string())),
+            _ => Err(anyhowln!("invalid market kind: {}", kind)),
+        }
+    }
 }
 
 impl Serialize for MarketKind {
@@ -157,36 +182,8 @@ impl Serialize for MarketKind {
         S: Serializer,
     {
         let mut state = serializer.serialize_tuple(2)?;
-        match self {
-            MarketKind::Spot(data) => {
-                state.serialize_element(data)?;
-                state.serialize_element("Spot")?;
-            }
-            MarketKind::Margin(data) => {
-                state.serialize_element(data)?;
-                state.serialize_element("Margin")?;
-            }
-            MarketKind::Derivatives(data) => {
-                state.serialize_element(data)?;
-                state.serialize_element("Derivatives")?;
-            }
-            MarketKind::LinearFuture(data) => {
-                state.serialize_element(data)?;
-                state.serialize_element("LinearFuture")?;
-            }
-            MarketKind::LinearPerpetual(data) => {
-                state.serialize_element(data)?;
-                state.serialize_element("LinearPerpetual")?;
-            }
-            MarketKind::InverseFuture(data) => {
-                state.serialize_element(data)?;
-                state.serialize_element("InverseFuture")?;
-            }
-            MarketKind::InversePerpetual(data) => {
-                state.serialize_element(data)?;
-                state.serialize_element("InversePerpetual")?;
-            }
-        }
+        state.serialize_element(self.kind())?;
+        state.serialize_element(self.symbol())?;
         state.end()
     }
 }
@@ -209,35 +206,19 @@ impl<'de> Deserialize<'de> for MarketKind {
             where
                 A: SeqAccess<'de>,
             {
-                let data: String = seq
+                let kind: String = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let kind: String = seq
+
+                let symbol: String = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(1, &self))?;
 
-                match kind.as_str() {
-                    "Spot" => Ok(MarketKind::Spot(data)),
-                    "Margin" => Ok(MarketKind::Margin(data)),
-                    "Derivatives" => Ok(MarketKind::Derivatives(data)),
-                    "LinearFuture" => Ok(MarketKind::LinearFuture(data)),
-                    "LinearPerpetual" => Ok(MarketKind::LinearPerpetual(data)),
-                    "InverseFuture" => Ok(MarketKind::InverseFuture(data)),
-                    "InversePerpetual" => Ok(MarketKind::InversePerpetual(data)),
-                    _ => Err(de::Error::unknown_variant(&kind, VARIANTS)),
-                }
+                MarketKind::from_str(kind.as_str(), symbol.as_str())
+                    .map_err(|err| de::Error::custom(err.to_string()))
             }
         }
 
-        const VARIANTS: &'static [&'static str] = &[
-            "Spot",
-            "Margin",
-            "Derivatives",
-            "LinearFuture",
-            "LinearPerpetual",
-            "InverseFuture",
-            "InversePerpetual",
-        ];
         deserializer.deserialize_tuple(2, MarketKindVisitor)
     }
 }
@@ -1852,14 +1833,26 @@ impl TryFrom<HashMap<String, SecretString>> for ExchangeKey {
 
     fn try_from(mut map: HashMap<String, SecretString>) -> anyhow::Result<Self> {
         let tag = map.remove("tag").ok_or(anyhowln!("missing key: tag"))?;
-        let exchange = map.remove("exchange").ok_or(anyhowln!("missing key: exchange"))?;
-        let is_testnet = map.remove("is_testnet").ok_or(anyhowln!("missing key: is_testnet"))?;
+        let exchange = map
+            .remove("exchange")
+            .ok_or(anyhowln!("missing key: exchange"))?;
+        let is_testnet = map
+            .remove("is_testnet")
+            .ok_or(anyhowln!("missing key: is_testnet"))?;
         let email = map.remove("email").ok_or(anyhowln!("missing key: email"))?;
         let key = map.remove("key").ok_or(anyhowln!("missing key: key"))?;
-        let secret = map.remove("secret").ok_or(anyhowln!("missing key: secret"))?;
-        let passphrase = map.remove("passphrase").ok_or(anyhowln!("missing key: passphrase"))?;
-        let socks5ip = map.remove("socks5ip").ok_or(anyhowln!("missing key: socks5ip"))?;
-        let socks5port = map.remove("socks5port").ok_or(anyhowln!("missing key: socks5port"))?;
+        let secret = map
+            .remove("secret")
+            .ok_or(anyhowln!("missing key: secret"))?;
+        let passphrase = map
+            .remove("passphrase")
+            .ok_or(anyhowln!("missing key: passphrase"))?;
+        let socks5ip = map
+            .remove("socks5ip")
+            .ok_or(anyhowln!("missing key: socks5ip"))?;
+        let socks5port = map
+            .remove("socks5port")
+            .ok_or(anyhowln!("missing key: socks5port"))?;
 
         Ok(Self {
             tag: tag.expose_secret().to_string(),
