@@ -4,18 +4,15 @@ use futures::{SinkExt, StreamExt};
 use serde_with::{serde_as, DisplayFromStr, DurationSecondsWithFrac};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
+use axum::extract::ws::{Message as AxumMessage, WebSocket as AxumWebsocket};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedSender},
     RwLock,
 };
-
-use axum::{
-    extract::ws::{Message as AxumMessage, WebSocket as AxumWebsocket},
-    http::Uri,
-};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
+use url::Url;
 
 use cassry::{chrono::DateTime, futures::Sink, *};
 
@@ -126,7 +123,7 @@ pub enum Signal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectParams {
     #[serde_as(as = "DisplayFromStr")]
-    pub url: Uri,
+    pub url: Url,
     pub protocol: String,
     pub header: HashMap<String, String>,
 
@@ -137,9 +134,21 @@ pub struct ConnectParams {
 }
 
 impl ConnectParams {
+    pub fn add_path(&mut self, paths: std::vec::Vec<&str>) -> anyhow::Result<&mut Self> {
+        if let Ok(mut path_segments) = self.url.path_segments_mut() {
+            for segment in paths {
+                println!("segment: {}", segment);
+                path_segments.push(segment);
+            }
+        } else {
+            return Err(anyhowln!("invalid url"));
+        }
+        Ok(self)
+    }
+
     pub fn from_str(url: &str) -> anyhow::Result<Self> {
         Ok(Self {
-            url: Uri::from_str(url)?,
+            url: Url::from_str(url)?,
             protocol: Default::default(),
             header: Default::default(),
             eject: chrono::Duration::seconds(5),
@@ -182,7 +191,7 @@ impl WebsocketParams {
         }
     }
 
-    pub fn get_connected_url(&self) -> Option<&Uri> {
+    pub fn get_connected_url(&self) -> Option<&Url> {
         match self {
             WebsocketParams::Connect(params) => Some(&params.url),
             _ => None,
@@ -425,7 +434,7 @@ impl ConnectionReal {
     {
         if let WebsocketParams::Connect(params) = param.as_ref() {
             cassry::debug!("connecting websocket : {}", &params.url);
-            let mut request = params.url.clone().into_client_request()?;
+            let mut request = params.url.to_string().into_client_request()?;
             for (key, value) in params.header.iter() {
                 let name = axum::http::HeaderName::from_str(key.clone().as_str())?;
                 let value = axum::http::HeaderValue::from_str(value.clone().as_str())?;
@@ -561,7 +570,7 @@ impl Websocket {
         }
     }
 
-    pub fn get_connected_url(&self) -> Option<&Uri> {
+    pub fn get_connected_url(&self) -> Option<&Url> {
         self.param.get_connected_url()
     }
 

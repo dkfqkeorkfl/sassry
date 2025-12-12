@@ -1247,8 +1247,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<ConnectParams> {
         let mut param = ctx.param.websocket.clone();
-        param.url = format!("{}{}", ctx.param.websocket.url.to_string(), group)
-            .parse::<axum::http::Uri>()?;
+        param.add_path(group.trim_start_matches("/").split("/").collect::<Vec<_>>())?;
         Ok(param)
     }
 

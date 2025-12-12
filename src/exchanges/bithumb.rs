@@ -1275,15 +1275,15 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
         let mut params = ctx.param.websocket.clone();
         if group == "/v1/private" {
             let (_, jwt) = RestAPI::make_jwt(&ctx.param.key, &Default::default())?;
-            params.url = format!("{}{}", ctx.param.websocket.url.to_string(), group).parse::<Uri>()?;
+            params.add_path(group.trim_start_matches("/").split("/").collect::<Vec<_>>())?;
             params.header.insert(
                 reqwest::header::AUTHORIZATION.to_string(),
                 format!("Bearer {}", jwt),
             );
         } else if let Some((path, _)) = group.split_once("?") {
-            params.url = format!("{}{}", ctx.param.websocket.url.to_string(), path).parse::<Uri>()?;
+            params.add_path(path.trim_start_matches("/").split("/").collect::<Vec<_>>())?;
         } else {
-            params.url = format!("{}{}", ctx.param.websocket.url.to_string(), group).parse::<Uri>()?;
+            params.add_path(group.trim_start_matches("/").split("/").collect::<Vec<_>>())?;
         }
 
         Ok(params)
