@@ -197,6 +197,13 @@ impl WebsocketParams {
             _ => None,
         }
     }
+
+    pub fn get_aceepted_ip(&self) -> Option<&std::net::SocketAddr> {
+        match self {
+            WebsocketParams::Accept(params) => Some(&params.addr),
+            _ => None,
+        }
+    }
 }
 
 #[async_trait]
@@ -576,6 +583,10 @@ impl Websocket {
 
     pub fn get_connected_url_str(&self) -> Option<String> {
         self.get_connected_url().map(|url| url.to_string())
+    }
+
+    pub fn get_aceepted_ip(&self) -> Option<&std::net::SocketAddr> {
+        self.param.get_aceepted_ip()
     }
 
     pub fn get_created(&self) -> DateTime<Utc> {
