@@ -128,7 +128,7 @@ pub struct ConnectParams {
     pub header: HashMap<String, String>,
 
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
-    pub eject: chrono::Duration,
+    pub pong_timeout: chrono::Duration,
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
     pub ping_interval: std::time::Duration,
 }
@@ -150,7 +150,7 @@ impl ConnectParams {
             url: Url::from_str(url)?,
             protocol: Default::default(),
             header: Default::default(),
-            eject: chrono::Duration::seconds(5),
+            pong_timeout: chrono::Duration::seconds(5),
             ping_interval: std::time::Duration::from_secs(60),
         })
     }
@@ -162,7 +162,7 @@ pub struct AcceptParams {
     pub addr: std::net::SocketAddr,
     // sassry는 기본적으로 chrono를 채택하여 사용
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
-    pub eject: chrono::Duration,
+    pub pong_timeout: chrono::Duration,
 
     // tokio는 std::time::Duration을 채택하여 사용
     #[serde_as(as = "DurationSecondsWithFrac<String>")]
@@ -176,10 +176,10 @@ pub enum WebsocketParams {
 }
 
 impl WebsocketParams {
-    pub fn get_eject(&self) -> &chrono::Duration {
+    pub fn get_pong_timeout(&self) -> &chrono::Duration {
         match self {
-            WebsocketParams::Connect(params) => &params.eject,
-            WebsocketParams::Accept(params) => &params.eject,
+            WebsocketParams::Connect(params) => &params.pong_timeout,
+            WebsocketParams::Accept(params) => &params.pong_timeout,
         }
     }
 
@@ -333,7 +333,7 @@ impl ConnectionReal {
 
             while *is_connected.read().await {
                 let result = if let Some(ptr) = wpt_ws.upgrade() {
-                    if ptr.latency().await > *ptr.get_param().get_eject() {
+                    if ptr.latency().await > *ptr.get_param().get_pong_timeout() {
                         Err(anyhowln!("occur eject for ping test"))
                     } else {
                         ptr.ping().await

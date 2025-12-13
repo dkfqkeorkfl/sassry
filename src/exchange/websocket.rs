@@ -454,7 +454,7 @@ impl ExchangeSocket {
         inner: &Arc<Inner>,
         param: ConnectParams,
     ) -> anyhow::Result<Websocket> {
-        let inner = std::sync::Arc::downgrade(inner);
+        let inner = Arc::downgrade(inner);
         Websocket::connect(param, move |websocket, signal| {
             let inner = inner.clone();
             async move {
