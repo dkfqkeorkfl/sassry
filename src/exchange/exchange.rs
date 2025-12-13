@@ -69,7 +69,7 @@ pub trait RestApiTrait: Send + Sync + 'static {
     async fn request_market(
         &self,
         context: &ExchangeContextPtr,
-    ) -> anyhow::Result<DataSet<Market, MarketKind>>;
+    ) -> anyhow::Result<DataSet<Market, MarketID>>;
     async fn request_wallet(
         &self,
         context: &ExchangeContextPtr,
@@ -79,7 +79,7 @@ pub trait RestApiTrait: Send + Sync + 'static {
         &self,
         context: &ExchangeContextPtr,
         market: &MarketPtr,
-    ) -> anyhow::Result<HashMap<MarketKind, PositionSet>>;
+    ) -> anyhow::Result<HashMap<MarketID, PositionSet>>;
 
     async fn request_orderbook(
         &self,
@@ -327,7 +327,7 @@ impl Exchange {
                         }
                         Signal::Closed => {
                             let mut locked = context_ptr.storage.positions.write().await;
-                            *locked = HashMap::<MarketKind, PositionSet>::default();
+                            *locked = HashMap::<MarketID, PositionSet>::default();
                             drop(locked);
 
                             let mut locked = context_ptr.storage.assets.write().await;
@@ -411,18 +411,18 @@ impl Exchange {
         self.restapi.support_amend(&self.context)
     }
 
-    pub async fn get_markets(&self) -> Vec<MarketKind> {
+    pub async fn get_markets(&self) -> Vec<MarketID> {
         let lock = self.get_storage().markets.read().await;
         lock.get_datas()
             .values()
-            .map(|v| &v.kind)
+            .map(|v| &v.market_id)
             .collect::<HashSet<_>>()
             .iter()
             .map(|k| (**k).clone())
             .collect::<Vec<_>>()
     }
 
-    pub async fn find_market(&self, kind: &MarketKind) -> Option<MarketPtr> {
+    pub async fn find_market(&self, kind: &MarketID) -> Option<MarketPtr> {
         let lock = self.get_storage().markets.read().await;
         lock.get_datas().get(kind).cloned()
     }
@@ -469,7 +469,7 @@ impl Exchange {
     pub async fn request_position(
         &self,
         market: &MarketPtr,
-    ) -> anyhow::Result<HashMap<MarketKind, PositionSet>> {
+    ) -> anyhow::Result<HashMap<MarketID, PositionSet>> {
         let sparam = SubscribeParam::position().market(market.clone()).build();
         let (can_takeout, can_cache) =
             if let Some(is_subscribed) = self.websocket.is_subscribed(&sparam).await {
@@ -487,7 +487,7 @@ impl Exchange {
 
         let imported_ret = if can_takeout {
             let locked = self.get_storage().positions.read().await;
-            if let Some(value) = locked.get(&market.kind) {
+            if let Some(value) = locked.get(&market.market_id) {
                 cassry::debug!(
                     "imported position from storage : date({}), laytency({})",
                     value.get_packet_time().recvtime.to_string(),
@@ -497,13 +497,13 @@ impl Exchange {
             } else {
                 cassry::debug!(
                     "imported position from storage but cannot find market({}).",
-                    serde_json::to_string(&market.kind).unwrap_or(String::default())
+                    serde_json::to_string(&market.market_id).unwrap_or(String::default())
                 );
 
                 anyhow::Result::Err(locked.clone())
             }
         } else {
-            anyhow::Result::Err(HashMap::<MarketKind, PositionSet>::new())
+            anyhow::Result::Err(HashMap::<MarketID, PositionSet>::new())
         };
 
         let ret = match imported_ret {
@@ -512,9 +512,9 @@ impl Exchange {
                 let mut ret = self.restapi.request_position(&self.context, market).await?;
 
                 if can_cache {
-                    if !ret.contains_key(&market.kind) {
+                    if !ret.contains_key(&market.market_id) {
                         ret.insert(
-                            market.kind.clone(),
+                            market.market_id.clone(),
                             PositionSet::new(
                                 Default::default(),
                                 MarketVal::Pointer(market.clone()),
@@ -527,7 +527,7 @@ impl Exchange {
                         .await?;
                     cassry::debug!(
                         "synchronized position from requested data to storage : market({})",
-                        serde_json::to_string(&market.kind).unwrap_or(String::default())
+                        serde_json::to_string(&market.market_id).unwrap_or(String::default())
                     );
                 }
 
@@ -561,7 +561,7 @@ impl Exchange {
 
         let ret = if can_takeout {
             let locked = self.context.storage.orderbook.read().await;
-            if let Some(orderbook) = locked.get(&market.kind).cloned() {
+            if let Some(orderbook) = locked.get(&market.market_id).cloned() {
                 Some(orderbook)
             } else {
                 None
@@ -726,7 +726,7 @@ impl Exchange {
         if can_takeout {
             let mut remover = Vec::<String>::default();
             for oid in restapi_param.get_datas().keys() {
-                let result = self.context.find_order(&oid, &market.kind).await?;
+                let result = self.context.find_order(&oid, &market.market_id).await?;
                 if let Some(order) = result {
                     remover.push(oid.clone());
                     already_synced.insert(oid.clone(), order.clone());
@@ -748,8 +748,8 @@ impl Exchange {
                 .await?;
 
             if can_cache {
-                let sb = HashMap::<MarketKind, OrderSet>::from([(
-                    market.kind.clone(),
+                let sb = HashMap::<MarketID, OrderSet>::from([(
+                    market.market_id.clone(),
                     ret.success.clone(),
                 )]);
                 self.context.update(SubscribeResult::Order(sb)).await?;

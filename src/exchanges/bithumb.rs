@@ -337,7 +337,7 @@ impl exchange::RestApiTrait for RestAPI {
         let bodies = future::join_all(params.iter().map(|param| {
             let side = if param.side.is_buy() { "bid" } else { "ask" };
             let body = json!({
-                "market": market.kind.symbol(),
+                "market": market.market_id.symbol(),
                 "order_type": "limit",
                 "side": side,
                 "price": param.price.to_string(),
@@ -456,7 +456,7 @@ impl exchange::RestApiTrait for RestAPI {
         market: &MarketPtr,
     ) -> anyhow::Result<OrderSet> {
         // 고빈도 트레이딩 최적화: split 결과 캐싱 또는 직접 파싱
-        let symbol = market.kind.symbol();
+        let symbol = market.market_id.symbol();
         let (order_currency, payment_currency) = if let Some(pos) = symbol.find('_') {
             (&symbol[..pos], &symbol[pos + 1..])
         } else {
@@ -487,7 +487,7 @@ impl exchange::RestApiTrait for RestAPI {
         _param: &OrdSerachParam,
     ) -> anyhow::Result<OrderSet> {
         // 고빈도 트레이딩 최적화: split 결과 캐싱 또는 직접 파싱
-        let symbol = market.kind.symbol();
+        let symbol = market.market_id.symbol();
         let (order_currency, payment_currency) = if let Some(pos) = symbol.find('_') {
             (&symbol[..pos], &symbol[pos + 1..])
         } else {
@@ -527,7 +527,7 @@ impl exchange::RestApiTrait for RestAPI {
                 exchange::RequestParam::new_mpb(
                     reqwest::Method::GET,
                     "/v1/orderbook",
-                    json!({ "markets": market.kind.symbol() }),
+                    json!({ "markets": market.market_id.symbol() }),
                 ),
             )
             .await?;
@@ -578,7 +578,7 @@ impl exchange::RestApiTrait for RestAPI {
         &self,
         _context: &ExchangeContextPtr,
         _market: &MarketPtr,
-    ) -> anyhow::Result<HashMap<MarketKind, PositionSet>> {
+    ) -> anyhow::Result<HashMap<MarketID, PositionSet>> {
         // 빗썸은 현물 거래만 지원하므로 포지션 없음
         Ok(HashMap::new())
     }
@@ -677,7 +677,7 @@ impl exchange::RestApiTrait for RestAPI {
     async fn request_market(
         &self,
         context: &ExchangeContextPtr,
-    ) -> anyhow::Result<DataSet<Market, MarketKind>> {
+    ) -> anyhow::Result<DataSet<Market, MarketID>> {
         let ordered = {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -743,7 +743,7 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut markets = DataSet::<Market, MarketKind>::default();
+        let mut markets = DataSet::<Market, MarketID>::default();
         for result in bodies {
             let (root, packet) = result?;
 
@@ -768,7 +768,7 @@ impl exchange::RestApiTrait for RestAPI {
             };
 
             let least = float::to_decimal_with_json(&market["bid"]["min_total"])?;
-            let kind = MarketKind::Spot(symbol.to_string());
+            let market_id = MarketID::Spot(symbol.to_string());
             let ap_kind =
                 self.specific_ap_precision
                     .get(symbol)
@@ -791,7 +791,7 @@ impl exchange::RestApiTrait for RestAPI {
             let market = Market {
                 ptime: packet.clone(),
                 updated: Utc::now(),
-                kind: kind.clone(),
+                market_id: market_id.clone(),
                 state: state,
 
                 quote_currency: quote.to_uppercase(),
@@ -808,9 +808,9 @@ impl exchange::RestApiTrait for RestAPI {
                 detail: root,
             };
 
-            let delegate_kind = kind.from_symbol(format!("{}/{}", market.base_currency, market.quote_currency));
-            markets.insert_raw(delegate_kind, market.clone());
-            markets.insert_raw(kind, market);
+            let delegate_id = market_id.from_symbol(format!("{}/{}", market.base_currency, market.quote_currency));
+            markets.insert_raw(delegate_id, market.clone());
+            markets.insert_raw(market_id, market);
         }
 
         Ok(markets)
@@ -905,7 +905,7 @@ impl WebsocketItf {
                 };
 
                 let symbol = root["cd"].as_str().ok_or(anyhowln!("invalid code"))?;
-                let kind = MarketKind::Spot(symbol.to_string());
+                let market_id = MarketID::Spot(symbol.to_string());
                 let time = Utc.timestamp_millis_opt(tiemstamp).unwrap();
                 let mut order = if let Some(order) = proceed.order.as_mut() {
                     order.ptime = PacketTime::from_sendtime(&time);
@@ -1006,10 +1006,10 @@ impl WebsocketItf {
                     _ => {}
                 };
 
-                let mut os = OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(kind.clone()));
+                let mut os = OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(market_id.clone()));
                 os.insert_raw(order);
-                let mut ret = HashMap::<MarketKind, OrderSet>::default();
-                ret.insert(kind, os);
+                let mut ret = HashMap::<MarketID, OrderSet>::default();
+                ret.insert(market_id, os);
                 SubscribeResult::Order(ret)
             }
             _ => SubscribeResult::None,
@@ -1030,7 +1030,7 @@ impl WebsocketItf {
                 let time = Utc.timestamp_micros(tiemstamp).unwrap();
                 let mut orderbook = OrderBook::new(
                     PacketTime::from_sendtime(&time),
-                    MarketVal::Symbol(MarketKind::Spot(symbol.to_string())),
+                    MarketVal::Symbol(MarketID::Spot(symbol.to_string())),
                     time.clone(),
                 );
 
@@ -1066,7 +1066,7 @@ impl WebsocketItf {
             }
             "trade" => {
                 let time = Utc::now();
-                let mut ret = HashMap::<MarketKind, PublicTradeSet>::default();
+                let mut ret = HashMap::<MarketID, PublicTradeSet>::default();
 
                 let content = root["content"]
                     .as_object()
@@ -1077,7 +1077,7 @@ impl WebsocketItf {
                 let symbol = content["symbol"]
                     .as_str()
                     .ok_or(anyhowln!("invalid symbol in trade"))?;
-                let kind = MarketKind::Spot(symbol.to_string());
+                let market_id = MarketID::Spot(symbol.to_string());
 
                 let price = content["price"]
                     .as_str()
@@ -1112,16 +1112,16 @@ impl WebsocketItf {
                     detail: json!(content),
                 };
 
-                if let Some(set) = ret.get_mut(&kind) {
+                if let Some(set) = ret.get_mut(&market_id) {
                     set.insert_raw(trade);
                 } else {
                     let mut set = PublicTradeSet::new(
                         PacketTime::new(&time),
-                        MarketVal::Symbol(kind.clone()),
+                        MarketVal::Symbol(market_id.clone()),
                         None,
                     );
                     set.insert_raw(trade);
-                    ret.insert(kind, set);
+                    ret.insert(market_id, set);
                 }
 
                 SubscribeResult::PublicTrades(ret)

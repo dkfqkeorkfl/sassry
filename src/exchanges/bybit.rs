@@ -118,17 +118,17 @@ impl exchange::RestApiTrait for RestAPI {
         market: &MarketPtr,
         params: &[(OrderPtr, AmendParam)],
     ) -> anyhow::Result<OrderResult> {
-        let category = match &market.kind {
-            MarketKind::Spot(_) | MarketKind::Margin(_) => Ok("spot"),
-            MarketKind::LinearPerpetual(_) | MarketKind::LinearFuture(_) => Ok("linear"),
-            MarketKind::InversePerpetual(_) | MarketKind::InverseFuture(_) => Ok("inverse"),
+        let category = match &market.market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => Ok("spot"),
+            MarketID::LinearPerpetual(_) | MarketID::LinearFuture(_) => Ok("linear"),
+            MarketID::InversePerpetual(_) | MarketID::InverseFuture(_) => Ok("inverse"),
             _ => Err(anyhowln!("occur error in bybit::request_order_submit")),
         }?;
 
         let bodies = future::join_all(params.iter().map(|(order, param)| {
             let mut body = json!({
                 "category" : category,
-                "symbol" : market.kind.symbol(),
+                "symbol" : market.market_id.symbol(),
                 "orderId" : order.oid.clone(),
             });
 
@@ -186,13 +186,13 @@ impl exchange::RestApiTrait for RestAPI {
         context: &ExchangeContextPtr,
         params: &OrderSet,
     ) -> anyhow::Result<OrderResult> {
-        let kind = params
-            .get_market_kind()
+        let market_id = params
+            .get_market_id()
             .ok_or(anyhowln!("occur error in bybit::request_order_query"))?;
-        let category = match kind {
-            MarketKind::Spot(_) | MarketKind::Margin(_) => Ok("spot"),
-            MarketKind::LinearPerpetual(_) | MarketKind::LinearFuture(_) => Ok("linear"),
-            MarketKind::InversePerpetual(_) | MarketKind::InverseFuture(_) => Ok("inverse"),
+        let category = match market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => Ok("spot"),
+            MarketID::LinearPerpetual(_) | MarketID::LinearFuture(_) => Ok("linear"),
+            MarketID::InversePerpetual(_) | MarketID::InverseFuture(_) => Ok("inverse"),
             _ => Err(anyhowln!("occur error in bybit::request_order_submit")),
         }?;
 
@@ -254,10 +254,10 @@ impl exchange::RestApiTrait for RestAPI {
         market: &MarketPtr,
         params: &[OrderParam],
     ) -> anyhow::Result<OrderResult> {
-        let category = match market.kind {
-            MarketKind::Spot(_) | MarketKind::Margin(_) => Ok("spot"),
-            MarketKind::LinearPerpetual(_) | MarketKind::LinearFuture(_) => Ok("linear"),
-            MarketKind::InversePerpetual(_) | MarketKind::InverseFuture(_) => Ok("inverse"),
+        let category = match market.market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => Ok("spot"),
+            MarketID::LinearPerpetual(_) | MarketID::LinearFuture(_) => Ok("linear"),
+            MarketID::InversePerpetual(_) | MarketID::InverseFuture(_) => Ok("inverse"),
             _ => Err(anyhowln!("occur error in bybit::request_order_submit")),
         }?;
 
@@ -265,7 +265,7 @@ impl exchange::RestApiTrait for RestAPI {
             let mut body = json!({
                 "category" : category,
                 "orderType":"Limit",
-                "symbol":market.kind.symbol(),
+                "symbol":market.market_id.symbol(),
                 "price":param.price.to_string(),
                 "qty":param.amount.to_string(),
                 "timeInForce": if param.is_postonly {
@@ -329,13 +329,13 @@ impl exchange::RestApiTrait for RestAPI {
         context: &ExchangeContextPtr,
         params: &OrderSet,
     ) -> anyhow::Result<OrderResult> {
-        let kind = params
-            .get_market_kind()
+        let market_id = params
+            .get_market_id()
             .ok_or(anyhowln!("occur error in bybit::request_order_query"))?;
-        let category = match kind {
-            MarketKind::Spot(_) | MarketKind::Margin(_) => Ok("spot"),
-            MarketKind::LinearPerpetual(_) | MarketKind::LinearFuture(_) => Ok("linear"),
-            MarketKind::InversePerpetual(_) | MarketKind::InverseFuture(_) => Ok("inverse"),
+        let category = match market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => Ok("spot"),
+            MarketID::LinearPerpetual(_) | MarketID::LinearFuture(_) => Ok("linear"),
+            MarketID::InversePerpetual(_) | MarketID::InverseFuture(_) => Ok("inverse"),
             _ => Err(anyhowln!("occur error in bybit::request_order_submit")),
         }?;
 
@@ -400,16 +400,16 @@ impl exchange::RestApiTrait for RestAPI {
         context: &ExchangeContextPtr,
         market: &MarketPtr,
     ) -> anyhow::Result<OrderSet> {
-        let category = match &market.kind {
-            MarketKind::Spot(_) | MarketKind::Margin(_) => Ok("spot"),
-            MarketKind::LinearPerpetual(_) | MarketKind::LinearFuture(_) => Ok("linear"),
-            MarketKind::InversePerpetual(_) | MarketKind::InverseFuture(_) => Ok("inverse"),
+        let category = match &market.market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => Ok("spot"),
+            MarketID::LinearPerpetual(_) | MarketID::LinearFuture(_) => Ok("linear"),
+            MarketID::InversePerpetual(_) | MarketID::InverseFuture(_) => Ok("inverse"),
             _ => Err(anyhowln!("occur error in bybit::request_order_submit")),
         }?;
 
         let body = json!({
             "category" : category,
-            "symbol" : market.kind.symbol(),
+            "symbol" : market.market_id.symbol(),
             "limit" : 50,
             "openOnly" : 0
         });
@@ -443,16 +443,16 @@ impl exchange::RestApiTrait for RestAPI {
         market: &MarketPtr,
         param: &OrdSerachParam,
     ) -> anyhow::Result<OrderSet> {
-        let category = match market.kind {
-            MarketKind::Spot(_) | MarketKind::Margin(_) => Ok("spot"),
-            MarketKind::LinearPerpetual(_) | MarketKind::LinearFuture(_) => Ok("linear"),
-            MarketKind::InversePerpetual(_) | MarketKind::InverseFuture(_) => Ok("inverse"),
+        let category = match market.market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => Ok("spot"),
+            MarketID::LinearPerpetual(_) | MarketID::LinearFuture(_) => Ok("linear"),
+            MarketID::InversePerpetual(_) | MarketID::InverseFuture(_) => Ok("inverse"),
             _ => Err(anyhowln!("occur error in bybit::request_order_submit")),
         }?;
 
         let mut body = json!({
             "category" : category,
-            "symbol" : market.kind.symbol(),
+            "symbol" : market.market_id.symbol(),
             "limit" : 50
         });
 
@@ -491,15 +491,15 @@ impl exchange::RestApiTrait for RestAPI {
         market: &MarketPtr,
         _quantity: SubscribeQuantity,
     ) -> anyhow::Result<OrderBook> {
-        let category = match market.kind {
-            MarketKind::InverseFuture { .. } | MarketKind::InversePerpetual { .. } => Ok("inverse"),
-            MarketKind::LinearPerpetual { .. } | MarketKind::LinearFuture { .. } => Ok("linear"),
-            MarketKind::Spot(_) => Ok("spot"),
+        let category = match market.market_id {
+            MarketID::InverseFuture { .. } | MarketID::InversePerpetual { .. } => Ok("inverse"),
+            MarketID::LinearPerpetual { .. } | MarketID::LinearFuture { .. } => Ok("linear"),
+            MarketID::Spot(_) => Ok("spot"),
             _ => Err(anyhowln!("occur error in bybit::request_orderbook")),
         }?;
 
         let body = json!({
-            "symbol": market.kind.symbol(),
+            "symbol": market.market_id.symbol(),
             "category": category,
             "limit": 15
         });
@@ -537,11 +537,11 @@ impl exchange::RestApiTrait for RestAPI {
         &self,
         context: &ExchangeContextPtr,
         market: &MarketPtr,
-    ) -> anyhow::Result<HashMap<MarketKind, PositionSet>> {
-        let category = match market.kind {
-            MarketKind::Spot(_) | MarketKind::Margin(_) => Ok("spot"),
-            MarketKind::LinearPerpetual(_) | MarketKind::LinearFuture(_) => Ok("linear"),
-            MarketKind::InversePerpetual(_) | MarketKind::InverseFuture(_) => Ok("inverse"),
+    ) -> anyhow::Result<HashMap<MarketID, PositionSet>> {
+        let category = match market.market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => Ok("spot"),
+            MarketID::LinearPerpetual(_) | MarketID::LinearFuture(_) => Ok("linear"),
+            MarketID::InversePerpetual(_) | MarketID::InverseFuture(_) => Ok("inverse"),
             _ => Err(anyhowln!("occur error in bybit::request_order_submit")),
         }?;
 
@@ -553,13 +553,13 @@ impl exchange::RestApiTrait for RestAPI {
                     "/v5/position/list",
                     json!({
                         "category" : category,
-                        "symbol": market.kind.symbol()
+                        "symbol": market.market_id.symbol()
                     }),
                 ),
             )
             .await?;
 
-        let mut positions = HashMap::<MarketKind, PositionSet>::new();
+        let mut positions = HashMap::<MarketID, PositionSet>::new();
         let list = pr.0["result"]
             .as_object_mut()
             .and_then(|v| v["list"].as_array_mut())
@@ -596,13 +596,13 @@ impl exchange::RestApiTrait for RestAPI {
                 detail: obj.take(),
             };
 
-            if let Some(set) = positions.get_mut(&market.kind) {
+            if let Some(set) = positions.get_mut(&market.market_id) {
                 set.insert_raw(position);
             } else {
                 let mut set =
-                    PositionSet::new(pr.1.clone(), MarketVal::Symbol(market.kind.clone()));
+                    PositionSet::new(pr.1.clone(), MarketVal::Symbol(market.market_id.clone()));
                 set.insert_raw(position);
-                positions.insert(market.kind.clone(), set);
+                positions.insert(market.market_id.clone(), set);
             }
         }
 
@@ -709,7 +709,7 @@ impl exchange::RestApiTrait for RestAPI {
     async fn request_market(
         &self,
         context: &ExchangeContextPtr,
-    ) -> anyhow::Result<DataSet<Market, MarketKind>> {
+    ) -> anyhow::Result<DataSet<Market, MarketID>> {
         let bodies = future::join_all(["spot", "linear", "inverse"].iter().map(|category| {
             let body = json!({
                 "category" : category
@@ -731,7 +731,7 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut markets = DataSet::<Market, MarketKind>::default();
+        let mut markets = DataSet::<Market, MarketID>::default();
         for result in bodies {
             let (mut res, packet) = result?;
             let list = res["result"]
@@ -743,12 +743,12 @@ impl exchange::RestApiTrait for RestAPI {
             for item in list {
                 let symbol = item["symbol"].as_str().unwrap().to_string();
                 let k = match item["contractType"].as_str().unwrap_or("Spot") {
-                    "Spot" => MarketKind::Spot(symbol.clone()),
-                    "LinearPerpetual" => MarketKind::LinearPerpetual(symbol.clone()),
-                    "InversePerpetual" => MarketKind::InversePerpetual(symbol.clone()),
+                    "Spot" => MarketID::Spot(symbol.clone()),
+                    "LinearPerpetual" => MarketID::LinearPerpetual(symbol.clone()),
+                    "InversePerpetual" => MarketID::InversePerpetual(symbol.clone()),
 
-                    "InverseFutures" => MarketKind::InverseFuture(symbol.clone()),
-                    _ => MarketKind::Derivatives(item["symbol"].as_str().unwrap().to_string()),
+                    "InverseFutures" => MarketID::InverseFuture(symbol.clone()),
+                    _ => MarketID::Derivatives(item["symbol"].as_str().unwrap().to_string()),
                 };
 
                 struct ExtDatas {
@@ -759,7 +759,7 @@ impl exchange::RestApiTrait for RestAPI {
                     alimit: [CurrencyPair; 2],
                 }
 
-                let ext = if let MarketKind::Spot(_) = &k {
+                let ext = if let MarketID::Spot(_) = &k {
                     let pinfo = item
                         .get_mut("priceFilter")
                         .and_then(|v| v.as_object_mut())
@@ -804,7 +804,7 @@ impl exchange::RestApiTrait for RestAPI {
 
                 let market = Market {
                     ptime: packet.clone(),
-                    kind: k.clone(),
+                    market_id: k.clone(),
                     state: if item["status"].as_str().unwrap() != "Trading" {
                         MarketState::Disable
                     } else {
@@ -832,19 +832,19 @@ impl exchange::RestApiTrait for RestAPI {
 
                 let ptr = Arc::new(market);
                 match &k {
-                    MarketKind::Spot(_)
-                    | MarketKind::Margin(_)
-                    | MarketKind::LinearPerpetual(_)
-                    | MarketKind::InversePerpetual(_) => {
+                    MarketID::Spot(_)
+                    | MarketID::Margin(_)
+                    | MarketID::LinearPerpetual(_)
+                    | MarketID::InversePerpetual(_) => {
                         let symbol = format!("{}/{}", ptr.base_currency, ptr.quote_currency);
                         markets.insert(k.from_symbol(symbol), ptr.clone());
                     }
                     _ => {}
                 }
 
-                if let MarketKind::Spot(_) = &k {
+                if let MarketID::Spot(_) = &k {
                 } else {
-                    markets.insert(MarketKind::Derivatives(symbol), ptr.clone());
+                    markets.insert(MarketID::Derivatives(symbol), ptr.clone());
                 }
                 markets.insert(k, ptr);
             }
@@ -856,7 +856,7 @@ impl exchange::RestApiTrait for RestAPI {
 
 #[derive(Default)]
 pub struct WebsocketItf {
-    orderbooks: RwLock<HashMap<MarketKind, OrderBook>>,
+    orderbooks: RwLock<HashMap<MarketID, OrderBook>>,
 }
 
 impl WebsocketItf {
@@ -868,10 +868,10 @@ impl WebsocketItf {
     ) -> anyhow::Result<SubscribeResult> {
         let result = match tp {
             "position" => {
-                let mut positions = HashMap::<MarketKind, PositionSet>::new();
+                let mut positions = HashMap::<MarketID, PositionSet>::new();
                 for data in root["data"].as_array_mut().unwrap() {
                     let symbol = data["symbol"].as_str().unwrap().to_string();
-                    let kind = MarketKind::Derivatives(symbol.clone());
+                    let market_id = MarketID::Derivatives(symbol.clone());
                     let avg = float::to_decimal_with_json(&data["entryPrice"])?;
                     let leverage = float::to_decimal_with_json(&data["leverage"])?;
                     let size = float::to_decimal_with_json(&data["size"])?;
@@ -909,15 +909,15 @@ impl WebsocketItf {
                         let mut position = proto.clone();
                         position.side = side;
 
-                        if let Some(set) = positions.get_mut(&kind) {
+                        if let Some(set) = positions.get_mut(&market_id) {
                             set.insert_raw(position);
                         } else {
                             let mut set = PositionSet::new(
                                 position.get_packet_time().clone(),
-                                MarketVal::Symbol(kind.clone()),
+                                MarketVal::Symbol(market_id.clone()),
                             );
                             set.insert_raw(position);
-                            positions.insert(kind.clone(), set);
+                            positions.insert(market_id.clone(), set);
                         }
                     }
                 }
@@ -957,17 +957,17 @@ impl WebsocketItf {
             }
             "order" => {
                 let time = Utc::now();
-                let mut ret = HashMap::<MarketKind, OrderSet>::default();
+                let mut ret = HashMap::<MarketID, OrderSet>::default();
                 for data in root["data"].as_array_mut().unwrap() {
                     let symbol = data["symbol"].as_str().unwrap().to_string();
-                    let kind = MarketKind::Derivatives(symbol);
-                    let os = if let Some(os) = ret.get_mut(&kind) {
+                    let market_id = MarketID::Derivatives(symbol);
+                    let os = if let Some(os) = ret.get_mut(&market_id) {
                         os
                     } else {
                         let os =
-                            OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(kind.clone()));
-                        ret.insert(kind.clone(), os);
-                        ret.get_mut(&kind).unwrap()
+                            OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(market_id.clone()));
+                        ret.insert(market_id.clone(), os);
+                        ret.get_mut(&market_id).unwrap()
                     };
 
                     let order = RestAPI::parse_order(time.into(), data)?;
@@ -1007,8 +1007,8 @@ impl WebsocketItf {
                 let symbol = data["s"]
                     .as_str()
                     .map(|str| match path {
-                        "spot" => MarketKind::Spot(str.to_string()),
-                        _ => MarketKind::Derivatives(str.to_string()),
+                        "spot" => MarketID::Spot(str.to_string()),
+                        _ => MarketID::Derivatives(str.to_string()),
                     })
                     .unwrap();
 
@@ -1054,7 +1054,7 @@ impl WebsocketItf {
                     .timestamp_millis_opt(root["ts"].as_i64().unwrap())
                     .unwrap();
 
-                let mut ret = HashMap::<MarketKind, PublicTradeSet>::default();
+                let mut ret = HashMap::<MarketID, PublicTradeSet>::default();
                 let datas = root["data"]
                     .as_array_mut()
                     .ok_or(anyhowln!("invalid data member"))?;
@@ -1077,17 +1077,17 @@ impl WebsocketItf {
                     };
 
                     let symbol = data["s"].as_str().unwrap().to_string();
-                    let kind = MarketKind::Derivatives(symbol);
-                    if let Some(set) = ret.get_mut(&kind) {
+                    let market_id = MarketID::Derivatives(symbol);
+                    if let Some(set) = ret.get_mut(&market_id) {
                         set.insert_raw(trade);
                     } else {
                         let mut set = PublicTradeSet::new(
                             PacketTime::new(&time),
-                            MarketVal::Symbol(kind.clone()),
+                            MarketVal::Symbol(market_id.clone()),
                             None,
                         );
                         set.insert_raw(trade);
-                        ret.insert(kind, set);
+                        ret.insert(market_id, set);
                     }
                 }
                 SubscribeResult::PublicTrades(ret)
@@ -1277,15 +1277,15 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
             }
             SubscribeType::Orderbook | SubscribeType::PublicTrades => {
                 let symbol = param.value["market"].as_str()?;
-                let kind = serde_json::from_str::<MarketKind>(symbol).ok()?;
-                let group = match kind {
-                    MarketKind::LinearFuture(_) | MarketKind::LinearPerpetual(_) => {
+                let market_id = serde_json::from_str::<MarketID>(symbol).ok()?;
+                let group = match market_id {
+                    MarketID::LinearFuture(_) | MarketID::LinearPerpetual(_) => {
                         "/v5/public/linear"
                     }
-                    MarketKind::InverseFuture(_) | MarketKind::InversePerpetual(_) => {
+                    MarketID::InverseFuture(_) | MarketID::InversePerpetual(_) => {
                         "/v5/public/inverse"
                     }
-                    MarketKind::Spot(_) => "/v5/public/spot",
+                    MarketID::Spot(_) => "/v5/public/spot",
                     _ => return None,
                 };
                 let key = format!("{}{}", param.ty.clone() as u32, symbol);

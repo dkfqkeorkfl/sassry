@@ -127,7 +127,7 @@ pub enum MarketOpt {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum MarketKind {
+pub enum MarketID {
     Spot(String),
     Margin(String),
     Derivatives(String),
@@ -137,70 +137,70 @@ pub enum MarketKind {
     InversePerpetual(String),
 }
 
-impl MarketKind {
+impl MarketID {
     pub fn from_symbol(&self, symbol: String) -> Self {
         match self {
-            MarketKind::Spot(_) => MarketKind::Spot(symbol),
-            MarketKind::Margin(_) => MarketKind::Margin(symbol),
-            MarketKind::Derivatives(_) => MarketKind::Derivatives(symbol),
-            MarketKind::LinearFuture(_) => MarketKind::LinearFuture(symbol),
-            MarketKind::LinearPerpetual(_) => MarketKind::LinearPerpetual(symbol),
-            MarketKind::InverseFuture(_) => MarketKind::InverseFuture(symbol),
-            MarketKind::InversePerpetual(_) => MarketKind::InversePerpetual(symbol),
+            MarketID::Spot(_) => MarketID::Spot(symbol),
+            MarketID::Margin(_) => MarketID::Margin(symbol),
+            MarketID::Derivatives(_) => MarketID::Derivatives(symbol),
+            MarketID::LinearFuture(_) => MarketID::LinearFuture(symbol),
+            MarketID::LinearPerpetual(_) => MarketID::LinearPerpetual(symbol),
+            MarketID::InverseFuture(_) => MarketID::InverseFuture(symbol),
+            MarketID::InversePerpetual(_) => MarketID::InversePerpetual(symbol),
         }
     }
 
     pub fn symbol(&self) -> &str {
         match self {
-            MarketKind::Spot(s) => s.as_str(),
-            MarketKind::Margin(s) => s.as_str(),
-            MarketKind::Derivatives(s) => s.as_str(),
-            MarketKind::LinearFuture(s) => s.as_str(),
-            MarketKind::LinearPerpetual(s) => s.as_str(),
-            MarketKind::InverseFuture(s) => s.as_str(),
-            MarketKind::InversePerpetual(s) => s.as_str(),
+            MarketID::Spot(s) => s.as_str(),
+            MarketID::Margin(s) => s.as_str(),
+            MarketID::Derivatives(s) => s.as_str(),
+            MarketID::LinearFuture(s) => s.as_str(),
+            MarketID::LinearPerpetual(s) => s.as_str(),
+            MarketID::InverseFuture(s) => s.as_str(),
+            MarketID::InversePerpetual(s) => s.as_str(),
         }
     }
 
-    pub fn kind(&self) -> &str {
+    pub fn category(&self) -> &str {
         match self {
-            MarketKind::Spot(_) => "Spot",
-            MarketKind::Margin(_) => "Margin",
-            MarketKind::Derivatives(_) => "Derivatives",
-            MarketKind::LinearFuture(_) => "LinearFuture",
-            MarketKind::LinearPerpetual(_) => "LinearPerpetual",
-            MarketKind::InverseFuture(_) => "InverseFuture",
-            MarketKind::InversePerpetual(_) => "InversePerpetual",
+            MarketID::Spot(_) => "Spot",
+            MarketID::Margin(_) => "Margin",
+            MarketID::Derivatives(_) => "Derivatives",
+            MarketID::LinearFuture(_) => "LinearFuture",
+            MarketID::LinearPerpetual(_) => "LinearPerpetual",
+            MarketID::InverseFuture(_) => "InverseFuture",
+            MarketID::InversePerpetual(_) => "InversePerpetual",
         }
     }
 
     pub fn from_str(kind: &str, symbol: &str) -> anyhow::Result<Self> {
         match kind {
-            "Spot" => Ok(MarketKind::Spot(symbol.to_string())),
-            "Margin" => Ok(MarketKind::Margin(symbol.to_string())),
-            "Derivatives" => Ok(MarketKind::Derivatives(symbol.to_string())),
-            "LinearFuture" => Ok(MarketKind::LinearFuture(symbol.to_string())),
-            "LinearPerpetual" => Ok(MarketKind::LinearPerpetual(symbol.to_string())),
-            "InverseFuture" => Ok(MarketKind::InverseFuture(symbol.to_string())),
-            "InversePerpetual" => Ok(MarketKind::InversePerpetual(symbol.to_string())),
+            "Spot" => Ok(MarketID::Spot(symbol.to_string())),
+            "Margin" => Ok(MarketID::Margin(symbol.to_string())),
+            "Derivatives" => Ok(MarketID::Derivatives(symbol.to_string())),
+            "LinearFuture" => Ok(MarketID::LinearFuture(symbol.to_string())),
+            "LinearPerpetual" => Ok(MarketID::LinearPerpetual(symbol.to_string())),
+            "InverseFuture" => Ok(MarketID::InverseFuture(symbol.to_string())),
+            "InversePerpetual" => Ok(MarketID::InversePerpetual(symbol.to_string())),
             _ => Err(anyhowln!("invalid market kind: {}", kind)),
         }
     }
 }
 
-impl Serialize for MarketKind {
+impl Serialize for MarketID {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         let mut state = serializer.serialize_tuple(2)?;
-        state.serialize_element(self.kind())?;
+        state.serialize_element(self.category())?;
         state.serialize_element(self.symbol())?;
         state.end()
     }
 }
 
-impl<'de> Deserialize<'de> for MarketKind {
+impl<'de> Deserialize<'de> for MarketID {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -208,7 +208,7 @@ impl<'de> Deserialize<'de> for MarketKind {
         struct MarketKindVisitor;
 
         impl<'de> Visitor<'de> for MarketKindVisitor {
-            type Value = MarketKind;
+            type Value = MarketID;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("a tuple representing a MarketKind")
@@ -226,7 +226,7 @@ impl<'de> Deserialize<'de> for MarketKind {
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(1, &self))?;
 
-                MarketKind::from_str(kind.as_str(), symbol.as_str())
+                MarketID::from_str(kind.as_str(), symbol.as_str())
                     .map_err(|err| de::Error::custom(err.to_string()))
             }
         }
@@ -757,7 +757,7 @@ pub struct Market {
     pub ptime: PacketTime,
     pub updated: chrono::DateTime<Utc>,
 
-    pub kind: MarketKind,
+    pub market_id: MarketID,
     pub state: MarketState,
 
     pub quote_currency: String,
@@ -795,13 +795,13 @@ impl Market {
 
 impl Hash for Market {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.kind.hash(state);
+        self.market_id.hash(state);
     }
 }
 
 impl PartialEq for Market {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind
+        self.market_id == other.market_id
     }
 }
 
@@ -823,7 +823,7 @@ impl PacketTimeTrait for Market {
 pub enum MarketVal {
     #[default]
     None,
-    Symbol(MarketKind),
+    Symbol(MarketID),
     Pointer(MarketPtr),
 }
 
@@ -831,7 +831,7 @@ impl MarketVal {
     pub fn symbol(&self) -> &str {
         match self {
             MarketVal::Symbol(s) => s.symbol(),
-            MarketVal::Pointer(p) => p.kind.symbol(),
+            MarketVal::Pointer(p) => p.market_id.symbol(),
             MarketVal::None => "",
         }
     }
@@ -856,9 +856,9 @@ impl MarketVal {
         }
     }
 
-    pub fn market_kind(&self) -> Option<&MarketKind> {
+    pub fn market_kind(&self) -> Option<&MarketID> {
         match self {
-            MarketVal::Pointer(ptr) => Some(&ptr.kind),
+            MarketVal::Pointer(ptr) => Some(&ptr.market_id),
             MarketVal::Symbol(kind) => Some(kind),
             _ => None,
         }
@@ -873,7 +873,7 @@ impl Serialize for MarketVal {
         match self {
             MarketVal::None => serializer.serialize_none(),
             MarketVal::Symbol(kind) => kind.serialize(serializer),
-            MarketVal::Pointer(ptr) => ptr.kind.serialize(serializer),
+            MarketVal::Pointer(ptr) => ptr.market_id.serialize(serializer),
         }
     }
 }
@@ -887,7 +887,7 @@ impl<'de> Deserialize<'de> for MarketVal {
         match value {
             serde_json::Value::Null => Ok(MarketVal::None),
             _ => {
-                let kind = serde_json::from_value::<MarketKind>(value).map_err(|err| {
+                let kind = serde_json::from_value::<MarketID>(value).map_err(|err| {
                     serde::de::Error::custom(format!("Failed to deserialize MarketKind: {}", err))
                 })?;
                 Ok(MarketVal::Symbol(kind))
@@ -898,7 +898,7 @@ impl<'de> Deserialize<'de> for MarketVal {
 
 pub trait MarketTrait {
     fn get_market(&self) -> &MarketVal;
-    fn get_market_kind(&self) -> Option<&MarketKind> {
+    fn get_market_id(&self) -> Option<&MarketID> {
         self.get_market().market_kind()
     }
     fn get_symbol(&self) -> &str {
@@ -1671,8 +1671,8 @@ impl OrderbookSubscribeBuilder {
     pub fn build(self) -> SubscribeParam {
         let market = self.market.unwrap();
         let mut ret = json!({
-            "market": serde_json::to_string(&market.kind).unwrap(),
-            "symbol": market.kind.symbol(),
+            "market": serde_json::to_string(&market.market_id).unwrap(),
+            "symbol": market.market_id.symbol(),
         });
 
         if self.speed != SubscribeSpeed::None {
@@ -1727,8 +1727,8 @@ impl MSASubscribeBuilder {
     pub fn build(self) -> SubscribeParam {
         let market = self.market.unwrap();
         let mut ret = json!({
-            "market": serde_json::to_string(&market.kind).unwrap(),
-            "symbol": market.kind.symbol(),
+            "market": serde_json::to_string(&market.market_id).unwrap(),
+            "symbol": market.market_id.symbol(),
         });
 
         if self.speed != SubscribeSpeed::None {
@@ -1772,8 +1772,8 @@ impl MASubscribeBuilder {
         let mut ret = serde_json::Value::default();
         if self.market.is_some() {
             let market = self.market.unwrap();
-            ret["market"] = serde_json::Value::from(serde_json::to_string(&market.kind).unwrap());
-            ret["symbol"] = serde_json::Value::from(market.kind.symbol());
+            ret["market"] = serde_json::Value::from(serde_json::to_string(&market.market_id).unwrap());
+            ret["symbol"] = serde_json::Value::from(market.market_id.symbol());
         }
 
         if !self.additional.is_empty() {
@@ -1796,11 +1796,11 @@ pub enum SubscribeResult {
     )]
     Err(anyhow::Error),
     Orderbook(OrderBook),
-    PublicTrades(HashMap<MarketKind, PublicTradeSet>),
-    Order(HashMap<MarketKind, OrderSet>),
+    PublicTrades(HashMap<MarketID, PublicTradeSet>),
+    Order(HashMap<MarketID, OrderSet>),
     Balance(DataSet<Asset>),
 
-    Position(HashMap<MarketKind, PositionSet>),
+    Position(HashMap<MarketID, PositionSet>),
 }
 
 impl From<anyhow::Error> for SubscribeResult {
@@ -1811,10 +1811,10 @@ impl From<anyhow::Error> for SubscribeResult {
 
 #[derive(Debug)]
 pub struct ExchangeStorage {
-    pub markets: RwArc<DataSet<Market, MarketKind>>,
-    pub orderbook: RwArc<HashMap<MarketKind, Arc<OrderBook>>>,
-    pub trades: RwArc<HashMap<MarketKind, PublicTradeSet>>,
-    pub positions: RwArc<HashMap<MarketKind, PositionSet>>,
+    pub markets: RwArc<DataSet<Market, MarketID>>,
+    pub orderbook: RwArc<HashMap<MarketID, Arc<OrderBook>>>,
+    pub trades: RwArc<HashMap<MarketID, PublicTradeSet>>,
+    pub positions: RwArc<HashMap<MarketID, PositionSet>>,
     pub orders: cache::LfuCache<String, (OrderPtr, MarketPtr)>,
     pub assets: RwArc<DataSet<Asset>>,
 }
@@ -1949,7 +1949,7 @@ impl ExchangeContext {
         }
     }
 
-    pub async fn find_market(&self, kind: &MarketKind) -> Option<MarketPtr> {
+    pub async fn find_market(&self, kind: &MarketID) -> Option<MarketPtr> {
         let locked = self.storage.markets.read().await;
         locked.get_datas().get(kind).cloned()
     }
@@ -1957,7 +1957,7 @@ impl ExchangeContext {
     pub async fn load_db_order(
         &self,
         oid: &str,
-        _kind: &MarketKind,
+        _kind: &MarketID,
     ) -> anyhow::Result<Option<Arc<(OrderPtr, MarketPtr)>>> {
         let str = self.recorder.get(oid.to_string()).await?;
         if str.is_none() {
@@ -1986,7 +1986,7 @@ impl ExchangeContext {
 
     pub async fn save_db_order(&self, order: OrderPtr, market: MarketPtr) -> anyhow::Result<()> {
         let order_val = serde_json::to_value(&order)?;
-        let market_val = serde_json::to_value(&market.kind)?;
+        let market_val = serde_json::to_value(&market.market_id)?;
         let items = vec![order_val, market_val];
         let str = serde_json::to_string(&items)?;
         self.recorder.put(order.oid.clone(), str).await?;
@@ -2005,7 +2005,7 @@ impl ExchangeContext {
     pub async fn find_order(
         &self,
         oid: &String,
-        kind: &MarketKind,
+        kind: &MarketID,
     ) -> anyhow::Result<Option<OrderPtr>> {
         let item = if let Some((result, dump_opt)) = self.storage.orders.get(oid).await {
             if let Some(dump) = dump_opt {
@@ -2022,7 +2022,7 @@ impl ExchangeContext {
             opt.unwrap()
         };
 
-        if item.1.kind != *kind {
+        if item.1.market_id != *kind {
             return Ok(None);
         }
 
@@ -2067,7 +2067,7 @@ impl ExchangeContext {
                             .find_market(&key)
                             .await
                             .ok_or(anyhowln!("invalid market"))?;
-                        if let Some(v) = locked.get_mut(&market.kind) {
+                        if let Some(v) = locked.get_mut(&market.market_id) {
                             v
                         } else {
                             locked.insert(
@@ -2078,7 +2078,7 @@ impl ExchangeContext {
                                     Some(self.param.config.opt_max_trades_chche),
                                 ),
                             );
-                            locked.get_mut(&market.kind).unwrap()
+                            locked.get_mut(&market.market_id).unwrap()
                         }
                     };
 
@@ -2121,17 +2121,17 @@ impl ExchangeContext {
                             .find_market(&key)
                             .await
                             .ok_or(anyhowln!("invalid market"))?;
-                        if let Some(v) = locked.get_mut(&market.kind) {
+                        if let Some(v) = locked.get_mut(&market.market_id) {
                             v
                         } else {
                             locked.insert(
-                                market.kind.clone(),
+                                market.market_id.clone(),
                                 PositionSet::new(
                                     value.get_packet_time().clone(),
                                     MarketVal::Pointer(market.clone()),
                                 ),
                             );
-                            locked.get_mut(&market.kind).unwrap()
+                            locked.get_mut(&market.market_id).unwrap()
                         }
                     };
 
