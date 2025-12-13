@@ -794,8 +794,8 @@ impl exchange::RestApiTrait for RestAPI {
                 kind: kind.clone(),
                 state: state,
 
-                quote_currency: quote.to_string(),
-                base_currency: base.to_string(),
+                quote_currency: quote.to_uppercase(),
+                base_currency: base.to_uppercase(),
                 contract_size: Decimal::ONE,
                 fee: fee,
                 amount_limit: [
@@ -808,6 +808,8 @@ impl exchange::RestApiTrait for RestAPI {
                 detail: root,
             };
 
+            let delegate_kind = kind.from_symbol(format!("{}/{}", market.base_currency, market.quote_currency));
+            markets.insert_raw(delegate_kind, market.clone());
             markets.insert_raw(kind, market);
         }
 

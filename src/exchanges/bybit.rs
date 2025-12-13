@@ -690,20 +690,20 @@ impl exchange::RestApiTrait for RestAPI {
         context: &ExchangeContextPtr,
         param: exchange::RequestParam,
     ) -> anyhow::Result<(serde_json::Value, PacketTime)> {
-        let pr = self.req_async(context, param).await?;
-        let json =
-            pr.0.json::<serde_json::Value>()
-                .await
-                .map_err(|e| e.into())
-                .and_then(|j| {
-                    let code = j["retCode"].as_i64().unwrap_or(1);
-                    if code != 0 {
-                        Err(anyhowln!("invalid response : {}", j.to_string()))
-                    } else {
-                        Ok(j)
-                    }
-                })?;
-        return Ok((json, pr.1));
+        let (res, time) = self.req_async(context, param).await?;
+        let json = res
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| e.into())
+            .and_then(|j| {
+                let code = j["retCode"].as_i64().unwrap_or(1);
+                if code != 0 {
+                    Err(anyhowln!("invalid response : {}", j.to_string()))
+                } else {
+                    Ok(j)
+                }
+            })?;
+        return Ok((json, time));
     }
 
     async fn request_market(
@@ -715,9 +715,9 @@ impl exchange::RestApiTrait for RestAPI {
                 "category" : category
             });
 
-            let readable = &(*self);
+            let readable = self.clone();
             async move {
-                let ret = readable
+                readable
                     .request(
                         context,
                         exchange::RequestParam::new_mpb(
@@ -726,8 +726,7 @@ impl exchange::RestApiTrait for RestAPI {
                             body,
                         ),
                     )
-                    .await;
-                ret
+                    .await
             }
         }))
         .await;
@@ -812,8 +811,14 @@ impl exchange::RestApiTrait for RestAPI {
                         MarketState::Work
                     },
 
-                    quote_currency: item["quoteCoin"].as_str().unwrap().to_string(),
-                    base_currency: item["baseCoin"].as_str().unwrap().to_string(),
+                    quote_currency: item["quoteCoin"]
+                        .as_str()
+                        .ok_or(anyhowln!("invalid quoteCoin"))?
+                        .to_uppercase(),
+                    base_currency: item["baseCoin"]
+                        .as_str()
+                        .ok_or(anyhowln!("invalid baseCoin"))?
+                        .to_uppercase(),
                     contract_size: Decimal::ONE,
                     fee: FeeInfos::default(),
                     amount_limit: ext.alimit,
@@ -826,6 +831,17 @@ impl exchange::RestApiTrait for RestAPI {
                 };
 
                 let ptr = Arc::new(market);
+                match &k {
+                    MarketKind::Spot(_)
+                    | MarketKind::Margin(_)
+                    | MarketKind::LinearPerpetual(_)
+                    | MarketKind::InversePerpetual(_) => {
+                        let symbol = format!("{}/{}", ptr.base_currency, ptr.quote_currency);
+                        markets.insert(k.from_symbol(symbol), ptr.clone());
+                    }
+                    _ => {}
+                }
+
                 if let MarketKind::Spot(_) = &k {
                 } else {
                     markets.insert(MarketKind::Derivatives(symbol), ptr.clone());

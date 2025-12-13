@@ -138,6 +138,18 @@ pub enum MarketKind {
 }
 
 impl MarketKind {
+    pub fn from_symbol(&self, symbol: String) -> Self {
+        match self {
+            MarketKind::Spot(_) => MarketKind::Spot(symbol),
+            MarketKind::Margin(_) => MarketKind::Margin(symbol),
+            MarketKind::Derivatives(_) => MarketKind::Derivatives(symbol),
+            MarketKind::LinearFuture(_) => MarketKind::LinearFuture(symbol),
+            MarketKind::LinearPerpetual(_) => MarketKind::LinearPerpetual(symbol),
+            MarketKind::InverseFuture(_) => MarketKind::InverseFuture(symbol),
+            MarketKind::InversePerpetual(_) => MarketKind::InversePerpetual(symbol),
+        }
+    }
+
     pub fn symbol(&self) -> &str {
         match self {
             MarketKind::Spot(s) => s.as_str(),
@@ -2033,7 +2045,7 @@ impl ExchangeContext {
                     let market = self
                         .find_market(kind)
                         .await
-                        .ok_or(anyhowln!("cannot find market"))?;
+                        .ok_or(anyhowln!("cannot find market : {:?}", kind))?;
                     data.market = MarketVal::Pointer(market);
                     data.market.market_kind().unwrap()
                 };
