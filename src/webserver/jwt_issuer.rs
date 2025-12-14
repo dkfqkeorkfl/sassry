@@ -40,6 +40,10 @@ pub struct LoginParams {
     pub login_ip: SocketAddr,
 }
 
+pub trait DerivedFrom {
+    fn get_derived_from(&self) -> Uuid;
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct UserPayload {
     pub derived_from: [u8; 16],
@@ -53,8 +57,8 @@ pub struct UserPayload {
     pub payload_created_at: i64,
 }
 
-impl UserPayload {
-    pub fn get_derived_from(&self) -> Uuid {
+impl DerivedFrom for UserPayload {
+    fn get_derived_from(&self) -> Uuid {
         Uuid::from_bytes(self.derived_from.clone())
     }
 }
@@ -97,8 +101,8 @@ pub struct AccessPayload {
     pub payload_created_at: i64,
 }
 
-impl AccessPayload {
-    pub fn get_derived_from(&self) -> Uuid {
+impl DerivedFrom for AccessPayload {
+    fn get_derived_from(&self) -> Uuid {
         Uuid::from_bytes(self.derived_from.clone())
     }
 }
@@ -161,7 +165,7 @@ pub struct UserRefreshClaims {
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct UserClaimsFrame<T> {
+pub struct UserClaimsFrame<T: DerivedFrom> {
     /// 토큰 고유 ID
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
@@ -169,6 +173,12 @@ pub struct UserClaimsFrame<T> {
     pub exp: i64,
 
     pub payload: T,
+}
+
+impl<T: DerivedFrom> DerivedFrom for UserClaimsFrame<T> {
+    fn get_derived_from(&self) -> Uuid {
+        self.payload.get_derived_from()
+    }
 }
 
 pub type UserAccessClaims = UserClaimsFrame<AccessPayload>;
@@ -332,7 +342,7 @@ impl TokenIssuerImpl {
         let config = bincode::config::standard();
         let addr = bincode::encode_to_vec(addr, config)?;
         let key = [access_claims.jti.as_bytes(), addr.as_slice()].concat();
-        let nonce = util::hmac_blake2s_with_outlen(
+        let nonce = util::hmac_blake2b_with_len(
             self.csrf_dump_key.expose_secret().as_bytes(),
             key.as_slice(),
             12,
