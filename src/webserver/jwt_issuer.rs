@@ -9,10 +9,10 @@ use cassry::{
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
-use std::sync::Arc;
+use serde_with::{serde_as, DisplayFromStr};
+use std::{default, net::SocketAddr, str::FromStr, sync::Arc};
 use tower_cookies::Cookies;
 use uuid::Uuid;
-
 /// 토큰 타입 구분 (access/refresh 등)
 // #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 // pub enum TokenType {
@@ -31,15 +31,32 @@ use uuid::Uuid;
 //         TokenType::None
 //     }
 // }
+pub struct LoginParams {
+    pub uid: u64,
+    pub password: String,
+    pub role: u64,
 
-#[derive(Debug, Default, Clone, bincode::Encode, bincode::Decode)]
+    pub nick: String,
+    pub login_ip: SocketAddr,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct UserPayload {
+    pub derived_from: [u8; 16],
+
     pub uid: u64,
     pub role: u64,
     pub nick: String,
 
+    pub login_ip: SocketAddr,
     pub login_at: i64,
     pub payload_created_at: i64,
+}
+
+impl UserPayload {
+    pub fn get_derived_from(&self) -> Uuid {
+        Uuid::from_bytes(self.derived_from.clone())
+    }
 }
 
 impl Serialize for UserPayload {
@@ -74,16 +91,15 @@ impl<'de> Deserialize<'de> for UserPayload {
 
 #[derive(Debug, Default, Clone, bincode::Encode, bincode::Decode)]
 pub struct AccessPayload {
+    pub derived_from: [u8; 16],
+
     pub uid: u64,
     pub payload_created_at: i64,
 }
 
-impl From<&UserPayload> for AccessPayload {
-    fn from(payload: &UserPayload) -> Self {
-        Self {
-            uid: payload.uid,
-            payload_created_at: payload.payload_created_at,
-        }
+impl AccessPayload {
+    pub fn get_derived_from(&self) -> Uuid {
+        Uuid::from_bytes(self.derived_from.clone())
     }
 }
 
@@ -117,36 +133,41 @@ impl<'de> Deserialize<'de> for AccessPayload {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserRefreshClaims {
     /// 토큰 고유 ID
-    pub jti: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub jti: Uuid,
     /// 토큰의 만료 시간(초 단위)
     pub exp: i64,
     /// 발급자
     pub iss: String,
+    
     /// 사용자 ID
-    pub sub: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub sub: u64,
     /// 발급 시간
     pub iat: i64,
 
     /// 환경
-    pub env: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub env: SocketAddr,
 
     pub role: u64,
     pub failed: usize,
     pub password: String,
 }
 
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserClaimsFrame<T> {
     /// 토큰 고유 ID
-    pub jti: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub jti: Uuid,
     /// 토큰의 만료 시간(초 단위)
     pub exp: i64,
 
-    /// 발급자
-    pub derived_from: String,
     pub payload: T,
 }
 
@@ -228,6 +249,7 @@ pub struct IssuedClaims {
     pub refresh_claims: UserRefreshClaims,
     pub access_token: String,
     pub csrf_token: String,
+    pub csrf_dump: String,
 }
 
 pub struct ClaimsPair {
@@ -278,6 +300,8 @@ pub struct TokenIssuerImpl {
     name: String,
     access_isser: JwtIssuer,
     csrf_isser: JwtIssuer,
+
+    csrf_dump_key: SecretString,
     access_ttl: chrono::Duration,
     refresh_ttl: chrono::Duration,
 }
@@ -287,9 +311,11 @@ impl TokenIssuerImpl {
         &self.name
     }
 
-    pub fn set_access_ttl(&mut self, access_ttl: chrono::Duration) {
+    pub fn update(&mut self, access_ttl: chrono::Duration, refresh_ttl: chrono::Duration) {
         self.access_ttl = access_ttl;
+        self.refresh_ttl = refresh_ttl;
     }
+
     pub fn get_access_ttl(&self) -> &chrono::Duration {
         &self.access_ttl
     }
@@ -297,8 +323,22 @@ impl TokenIssuerImpl {
     pub fn get_refresh_ttl(&self) -> &chrono::Duration {
         &self.refresh_ttl
     }
-    pub fn set_refresh_ttl(&mut self, refresh_ttl: chrono::Duration) {
-        self.refresh_ttl = refresh_ttl;
+
+    pub fn generate_dump_secrets(
+        &self,
+        access_claims: &UserAccessClaims,
+        addr: &SocketAddr,
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        let config = bincode::config::standard();
+        let addr = bincode::encode_to_vec(addr, config)?;
+        let key = [access_claims.jti.as_bytes(), addr.as_slice()].concat();
+        let nonce = util::hmac_blake2s_with_outlen(
+            self.csrf_dump_key.expose_secret().as_bytes(),
+            key.as_slice(),
+            12,
+        )?;
+
+        Ok((key, nonce))
     }
 
     /// 새로운 JwtManager 인스턴스 생성
@@ -306,6 +346,7 @@ impl TokenIssuerImpl {
         name: String,
         access_secret: SecretString,
         csrf_secret: SecretString,
+        csrf_dump_key: SecretString,
         access_ttl: chrono::Duration,
         refresh_ttl: chrono::Duration,
     ) -> Self {
@@ -317,6 +358,7 @@ impl TokenIssuerImpl {
             csrf_isser: JwtIssuer {
                 secret: csrf_secret,
             },
+            csrf_dump_key,
             access_ttl,
             refresh_ttl,
         }
@@ -344,7 +386,8 @@ impl TokenIssuerImpl {
         let csrf_claims = self
             .csrf_isser
             .verify::<UserCsrfClaims>(csrf_token, validation)?;
-        if csrf_claims.derived_from != access_claims.jti {
+
+        if csrf_claims.payload.get_derived_from() != access_claims.jti {
             return Err(anyhow::anyhow!(
                 "mismatch csrf token: uid={}, access_created_at={}, csrf_created_at={}",
                 csrf_claims.payload.uid,
@@ -359,51 +402,50 @@ impl TokenIssuerImpl {
     }
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
-    pub fn login(
-        &self,
-        uid: u64,
-        role: u64,
-        nick: String,
-        password: String,
-        user_agent: String,
-    ) -> anyhow::Result<IssuedClaims> {
+    pub fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
         let now = Utc::now();
-        let user_payload = UserPayload {
-            uid,
-            role,
-            nick,
-            login_at: now.timestamp_millis(),
-            payload_created_at: now.timestamp_millis(),
-        };
-        let access_payload = AccessPayload {
-            uid,
-            payload_created_at: now.timestamp_millis(),
-        };
-
+        let refresh_jti = Uuid::new_v4();
         let refresh_claims = UserRefreshClaims {
-            jti: Uuid::new_v4().to_string(),
+            jti: refresh_jti,
             exp: (now + self.refresh_ttl).timestamp(),
             iss: self.name.clone(),
-            sub: uid.to_string(),
+            sub: params.uid,
             iat: now.timestamp(),
-            env: user_agent,
-            role: role,
+            env: params.login_ip,
+            role: params.role,
             failed: 0,
-            password: password,
+            password: params.password,
         };
 
+        let access_payload = AccessPayload {
+            derived_from: refresh_jti.into_bytes(),
+            uid: params.uid,
+            payload_created_at: now.timestamp_millis(),
+        };
+
+        let access_jti = Uuid::new_v4();
         let access_claims = UserAccessClaims {
-            jti: Uuid::new_v4().to_string(),
+            jti: access_jti,
             exp: (now + self.access_ttl).timestamp(),
-            derived_from: refresh_claims.jti.clone(),
             payload: access_payload,
         };
 
-        let csrf_claims = self.generate_csrf_token(&access_claims, user_payload);
+        let user_payload = UserPayload {
+            derived_from: access_jti.into_bytes(),
+            uid: params.uid,
+            role: params.role,
+            nick: params.nick,
+            login_ip: params.login_ip,
+            login_at: now.timestamp_millis(),
+            payload_created_at: now.timestamp_millis(),
+        };
+
+        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload)?;
         Ok(IssuedClaims {
             refresh_claims,
             access_token: self.access_isser.generate_jwt(&access_claims)?,
-            csrf_token: self.csrf_isser.generate_jwt(&csrf_claims)?,
+            csrf_token,
+            csrf_dump,
         })
     }
 
@@ -411,13 +453,22 @@ impl TokenIssuerImpl {
         &self,
         access_claims: &UserAccessClaims,
         user_payload: UserPayload,
-    ) -> UserCsrfClaims {
-        UserCsrfClaims {
-            jti: Uuid::new_v4().to_string(),
+    ) -> anyhow::Result<(String, String)> {
+        let csrf_claims = UserCsrfClaims {
+            jti: Uuid::new_v4(),
             exp: access_claims.exp,
-            derived_from: access_claims.jti.clone(),
             payload: user_payload,
-        }
+        };
+
+        let csrf_token = self.csrf_isser.generate_jwt(&csrf_claims)?;
+        let (key, nonce) =
+            self.generate_dump_secrets(access_claims, &csrf_claims.payload.login_ip)?;
+        let encrypted =
+            util::encrypt_str_by_aes_gcm_128(key.as_slice(), nonce.as_slice(), &csrf_token)?;
+        Ok((
+            csrf_token,
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&encrypted),
+        ))
     }
 
     pub fn refresh_access_token(
@@ -427,7 +478,7 @@ impl TokenIssuerImpl {
         mut user_payload: UserPayload,
     ) -> anyhow::Result<IssuedClaims> {
         if prev_access_claims.payload.uid != user_payload.uid
-            || prev_access_claims.derived_from != prev_refresh_clams.jti
+            || prev_access_claims.payload.get_derived_from() != prev_refresh_clams.jti
         {
             return Err(anyhow::anyhow!(
                 "Invalid refresh token: uid={}",
@@ -436,9 +487,10 @@ impl TokenIssuerImpl {
         }
 
         let now = Utc::now();
-        user_payload.payload_created_at = now.timestamp_millis();
+
+        let refresh_jti = Uuid::new_v4();
         let refresh_claims = UserRefreshClaims {
-            jti: Uuid::new_v4().to_string(),
+            jti: refresh_jti,
             exp: (now + self.refresh_ttl).timestamp(),
 
             iss: self.name.clone(),
@@ -450,18 +502,26 @@ impl TokenIssuerImpl {
             password: prev_refresh_clams.password,
         };
 
+        let access_payload = AccessPayload {
+            derived_from: refresh_jti.into_bytes(),
+            uid: user_payload.uid,
+            payload_created_at: now.timestamp_millis(),
+        };
+        let access_jti = Uuid::new_v4();
         let access_claims = UserAccessClaims {
-            jti: Uuid::new_v4().to_string(),
+            jti: access_jti,
             exp: (now + self.access_ttl).timestamp(),
-            derived_from: refresh_claims.jti.clone(),
-            payload: (&user_payload).into(),
+            payload: access_payload,
         };
 
-        let csrf_claims = self.generate_csrf_token(&access_claims, user_payload);
+        user_payload.derived_from = access_jti.into_bytes();
+        user_payload.payload_created_at = now.timestamp_millis();
+        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload)?;
         Ok(IssuedClaims {
             refresh_claims,
             access_token: self.access_isser.generate_jwt(&access_claims)?,
-            csrf_token: self.csrf_isser.generate_jwt(&csrf_claims)?,
+            csrf_token,
+            csrf_dump,
         })
     }
 }
@@ -476,18 +536,15 @@ impl TokenIssuer {
         self.isser.read().await.get_name().clone()
     }
 
+    pub async fn update(&mut self, access_ttl: chrono::Duration, refresh_ttl: chrono::Duration) {
+        self.isser.write().await.update(access_ttl, refresh_ttl);
+    }
     pub async fn get_access_ttl(&self) -> chrono::Duration {
         self.isser.read().await.get_access_ttl().clone()
-    }
-    pub async fn set_access_ttl(&mut self, access_ttl: chrono::Duration) {
-        self.isser.write().await.set_access_ttl(access_ttl);
     }
 
     pub async fn get_refresh_ttl(&self) -> chrono::Duration {
         self.isser.read().await.get_refresh_ttl().clone()
-    }
-    pub async fn set_refresh_ttl(&mut self, refresh_ttl: chrono::Duration) {
-        self.isser.write().await.set_refresh_ttl(refresh_ttl);
     }
 
     pub const fn get_cookie_name() -> &'static str {
@@ -503,30 +560,28 @@ impl TokenIssuer {
         name: String,
         access_secret: SecretString,
         csrf_secret: SecretString,
+        csrf_dump_key: SecretString,
         access_ttl: chrono::Duration,
         refresh_ttl: chrono::Duration,
     ) -> Self {
         Self {
             isser: Arc::new(
-                TokenIssuerImpl::new(name, access_secret, csrf_secret, access_ttl, refresh_ttl)
-                    .into(),
+                TokenIssuerImpl::new(
+                    name,
+                    access_secret,
+                    csrf_secret,
+                    csrf_dump_key,
+                    access_ttl,
+                    refresh_ttl,
+                )
+                .into(),
             ),
         }
     }
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
-    pub async fn login(
-        &self,
-        uid: u64,
-        role: u64,
-        nick: String,
-        password: String,
-        user_agent: String,
-    ) -> anyhow::Result<IssuedClaims> {
-        self.isser
-            .read()
-            .await
-            .login(uid, role, nick, password, user_agent)
+    pub async fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
+        self.isser.read().await.login(params)
     }
 
     pub async fn refresh_access_token(

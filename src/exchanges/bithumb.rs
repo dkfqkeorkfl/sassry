@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use super::super::exchange::*;
 use super::super::webserver::websocket::*;
-use axum::http::Uri;
 use cassry::tokio::sync::RwLock;
 use cassry::{float, secrecy::ExposeSecret, *};
 
