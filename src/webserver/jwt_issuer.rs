@@ -2,15 +2,15 @@ use super::error::HttpError;
 use axum::{extract::FromRequestParts, http::HeaderMap};
 use base64::engine::Engine;
 use cassry::{
-    chrono::Utc,
+    chrono::{DateTime, Utc},
     ring::hmac,
     secrecy::{ExposeSecret, SecretString},
     *,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
-use serde_with::{serde_as, DisplayFromStr};
-use std::{default, net::SocketAddr, str::FromStr, sync::Arc};
+use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
+use std::{net::SocketAddr, sync::Arc};
 use tower_cookies::Cookies;
 use uuid::Uuid;
 /// 토큰 타입 구분 (access/refresh 등)
@@ -144,7 +144,8 @@ pub struct UserRefreshClaims {
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
     /// 토큰의 만료 시간(초 단위)
-    pub exp: i64,
+    #[serde_as(as = "TimestampSeconds")]
+    pub exp: DateTime<Utc>,
     /// 발급자
     pub iss: String,
     
@@ -169,8 +170,9 @@ pub struct UserClaimsFrame<T: DerivedFrom> {
     /// 토큰 고유 ID
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
-    /// 토큰의 만료 시간(초 단위)
-    pub exp: i64,
+    /// 토큰의 만료 시간(
+    #[serde_as(as = "TimestampSeconds")]
+    pub exp: DateTime<Utc>,
 
     pub payload: T,
 }
@@ -207,9 +209,9 @@ where
             let mut validation = Validation::default();
             validation.validate_exp = false;
             let claims = jwt_manager
-                .export_access_claims_from(cookies, Some(validation))
+                .extract_access_claims_from(cookies, Some(validation))
                 .await?;
-            if chrono::Utc::now().timestamp() > claims.exp {
+            if chrono::Utc::now() > claims.exp {
                 return Err(HttpError::ExpiredJwt);
             }
 
@@ -245,7 +247,7 @@ where
                 .await?;
 
             // 만료 시간 확인
-            if chrono::Utc::now().timestamp() > claims_pair.csrf_claims.exp {
+            if chrono::Utc::now() > claims_pair.csrf_claims.exp {
                 return Err(HttpError::ExpiredJwt);
             }
 
@@ -417,7 +419,7 @@ impl TokenIssuerImpl {
         let refresh_jti = Uuid::new_v4();
         let refresh_claims = UserRefreshClaims {
             jti: refresh_jti,
-            exp: (now + self.refresh_ttl).timestamp(),
+            exp: now + self.refresh_ttl,
             iss: self.name.clone(),
             sub: params.uid,
             iat: now.timestamp(),
@@ -436,7 +438,7 @@ impl TokenIssuerImpl {
         let access_jti = Uuid::new_v4();
         let access_claims = UserAccessClaims {
             jti: access_jti,
-            exp: (now + self.access_ttl).timestamp(),
+            exp: now + self.access_ttl,
             payload: access_payload,
         };
 
@@ -501,7 +503,7 @@ impl TokenIssuerImpl {
         let refresh_jti = Uuid::new_v4();
         let refresh_claims = UserRefreshClaims {
             jti: refresh_jti,
-            exp: (now + self.refresh_ttl).timestamp(),
+            exp: now + self.refresh_ttl,
 
             iss: self.name.clone(),
             sub: prev_refresh_clams.sub,
@@ -520,7 +522,7 @@ impl TokenIssuerImpl {
         let access_jti = Uuid::new_v4();
         let access_claims = UserAccessClaims {
             jti: access_jti,
-            exp: (now + self.access_ttl).timestamp(),
+            exp: now + self.access_ttl,
             payload: access_payload,
         };
 
@@ -607,7 +609,7 @@ impl TokenIssuer {
         )
     }
 
-    pub async fn export_access_claims_from(
+    pub async fn extract_access_claims_from(
         &self,
         cookies: &Cookies,
         validation: Option<Validation>,
