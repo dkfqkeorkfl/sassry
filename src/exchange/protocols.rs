@@ -1772,7 +1772,8 @@ impl MASubscribeBuilder {
         let mut ret = serde_json::Value::default();
         if self.market.is_some() {
             let market = self.market.unwrap();
-            ret["market"] = serde_json::Value::from(serde_json::to_string(&market.market_id).unwrap());
+            ret["market"] =
+                serde_json::Value::from(serde_json::to_string(&market.market_id).unwrap());
             ret["symbol"] = serde_json::Value::from(market.market_id.symbol());
         }
 
@@ -1836,8 +1837,10 @@ pub struct ExchangeKey {
     pub secret: SecretString,
     pub passphrase: SecretString,
 
-    pub socks5ip: SecretString,
-    pub socks5port: SecretString,
+    #[serde(default)]
+    pub socks5ip: Option<SecretString>,
+    #[serde(default)]
+    pub socks5port: Option<SecretString>,
 }
 
 impl TryFrom<HashMap<String, SecretString>> for ExchangeKey {
@@ -1859,13 +1862,6 @@ impl TryFrom<HashMap<String, SecretString>> for ExchangeKey {
         let passphrase = map
             .remove("passphrase")
             .ok_or(anyhowln!("missing key: passphrase"))?;
-        let socks5ip = map
-            .remove("socks5ip")
-            .ok_or(anyhowln!("missing key: socks5ip"))?;
-        let socks5port = map
-            .remove("socks5port")
-            .ok_or(anyhowln!("missing key: socks5port"))?;
-
         Ok(Self {
             tag: tag.expose_secret().to_string(),
             exchange: exchange.expose_secret().to_string(),
@@ -1874,8 +1870,8 @@ impl TryFrom<HashMap<String, SecretString>> for ExchangeKey {
             key,
             secret,
             passphrase,
-            socks5ip,
-            socks5port,
+            socks5ip: map.remove("socks5ip"),
+            socks5port: map.remove("socks5port"),
         })
     }
 }

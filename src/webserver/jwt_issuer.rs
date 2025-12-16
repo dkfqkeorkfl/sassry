@@ -10,7 +10,7 @@ use cassry::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::IpAddr, sync::Arc};
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
@@ -20,7 +20,7 @@ pub struct LoginParams {
     pub role: u64,
 
     pub nick: String,
-    pub login_ip: SocketAddr,
+    pub login_ip: IpAddr,
 }
 
 pub trait DerivedFrom {
@@ -35,7 +35,7 @@ pub struct UserPayload {
     pub role: u64,
     pub nick: String,
 
-    pub login_ip: SocketAddr,
+    pub login_ip: IpAddr,
     pub login_at: i64,
     pub payload_created_at: i64,
 }
@@ -131,7 +131,7 @@ pub struct UserRefreshClaims {
     pub exp: DateTime<Utc>,
     /// 발급자
     pub iss: String,
-    
+
     /// 사용자 ID
     #[serde_as(as = "DisplayFromStr")]
     pub sub: u64,
@@ -140,7 +140,7 @@ pub struct UserRefreshClaims {
 
     /// 환경
     #[serde_as(as = "DisplayFromStr")]
-    pub env: SocketAddr,
+    pub env: IpAddr,
 
     pub role: u64,
     pub failed: usize,
@@ -319,21 +319,21 @@ impl TokenIssuerImpl {
         &self.refresh_ttl
     }
 
-    pub fn generate_dump_secrets(
+    pub fn generate_dump_nonce(
         &self,
         access_claims: &UserAccessClaims,
-        addr: &SocketAddr,
-    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        addr: &IpAddr,
+    ) -> anyhow::Result<Vec<u8>> {
         let config = bincode::config::standard();
         let addr = bincode::encode_to_vec(addr, config)?;
-        let key = [access_claims.jti.as_bytes(), addr.as_slice()].concat();
+        let bytes = [access_claims.jti.as_bytes(), addr.as_slice()].concat();
         let nonce = util::hmac_blake2b_with_len(
             self.csrf_dump_key.expose_secret().as_bytes(),
-            key.as_slice(),
+            bytes.as_slice(),
             12,
         )?;
 
-        Ok((key, nonce))
+        Ok(nonce)
     }
 
     /// 새로운 JwtManager 인스턴스 생성
@@ -444,10 +444,20 @@ impl TokenIssuerImpl {
         })
     }
 
-    pub fn decrypt_csrf_dump(&self, access_claims: &UserAccessClaims, addr: &SocketAddr, csrf_dump: &str) -> anyhow::Result<String> {
-        let (key, nonce) = self.generate_dump_secrets(access_claims, addr)?;
+    pub fn decrypt_csrf_dump(
+        &self,
+        access_claims: &UserAccessClaims,
+        addr: &IpAddr,
+        csrf_dump: &str,
+    ) -> anyhow::Result<String> {
+        let nonce = self.generate_dump_nonce(access_claims, addr)?;
         let encrypted = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(csrf_dump)?;
-        let decrypted = util::decrypt_str_by_aes_gcm_128(key.as_slice(), nonce.as_slice(), encrypted)?;
+        let decrypted = util::decrypt_str_by_aes_gcm_128(
+            access_claims.jti.as_bytes(),
+            nonce.as_slice(),
+            encrypted,
+        )?;
+
         Ok(decrypted.expose_secret().to_string())
     }
 
@@ -463,10 +473,12 @@ impl TokenIssuerImpl {
         };
 
         let csrf_token = self.csrf_isser.generate_jwt(&csrf_claims)?;
-        let (key, nonce) =
-            self.generate_dump_secrets(access_claims, &csrf_claims.payload.login_ip)?;
-        let encrypted =
-            util::encrypt_str_by_aes_gcm_128(key.as_slice(), nonce.as_slice(), &csrf_token)?;
+        let nonce = self.generate_dump_nonce(access_claims, &csrf_claims.payload.login_ip)?;
+        let encrypted = util::encrypt_str_by_aes_gcm_128(
+            access_claims.jti.as_bytes(),
+            nonce.as_slice(),
+            &csrf_token,
+        )?;
         Ok((
             csrf_token,
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&encrypted),
@@ -653,7 +665,15 @@ impl TokenIssuer {
             .await
     }
 
-    pub async fn decrypt_csrf_dump(&self, access_claims: &UserAccessClaims, addr: &SocketAddr, csrf_dump: &str) -> anyhow::Result<String> {
-        self.isser.read().await.decrypt_csrf_dump(access_claims, addr, csrf_dump)
+    pub async fn decrypt_csrf_dump(
+        &self,
+        access_claims: &UserAccessClaims,
+        addr: &IpAddr,
+        csrf_dump: &str,
+    ) -> anyhow::Result<String> {
+        self.isser
+            .read()
+            .await
+            .decrypt_csrf_dump(access_claims, addr, csrf_dump)
     }
 }
