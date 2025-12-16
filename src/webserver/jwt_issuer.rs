@@ -13,24 +13,7 @@ use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
 use std::{net::SocketAddr, sync::Arc};
 use tower_cookies::Cookies;
 use uuid::Uuid;
-/// 토큰 타입 구분 (access/refresh 등)
-// #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-// pub enum TokenType {
-//     #[serde(rename = "N")]
-//     None,
-//     #[serde(rename = "A")]
-//     Access,
-//     #[serde(rename = "R")]
-//     Refresh,
-//     #[serde(rename = "E")]
-//     Etc(String),
-// }
 
-// impl Default for TokenType {
-//     fn default() -> Self {
-//         TokenType::None
-//     }
-// }
 pub struct LoginParams {
     pub uid: u64,
     pub password: String,
@@ -243,7 +226,7 @@ where
             let mut validation = Validation::default();
             validation.validate_exp = false;
             let claims_pair = jwt_manager
-                .export_claims_pair_from(cookies, &parts.headers, Some(validation))
+                .extract_claims_pair_from(cookies, &parts.headers, Some(validation))
                 .await?;
 
             // 만료 시간 확인
@@ -461,6 +444,13 @@ impl TokenIssuerImpl {
         })
     }
 
+    pub fn decrypt_csrf_dump(&self, access_claims: &UserAccessClaims, addr: &SocketAddr, csrf_dump: &str) -> anyhow::Result<String> {
+        let (key, nonce) = self.generate_dump_secrets(access_claims, addr)?;
+        let encrypted = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(csrf_dump)?;
+        let decrypted = util::decrypt_str_by_aes_gcm_128(key.as_slice(), nonce.as_slice(), encrypted)?;
+        Ok(decrypted.expose_secret().to_string())
+    }
+
     pub fn generate_csrf_token(
         &self,
         access_claims: &UserAccessClaims,
@@ -626,7 +616,7 @@ impl TokenIssuer {
         Ok(access_claims)
     }
 
-    pub async fn export_claims_pair_from_bearer(
+    pub async fn extract_claims_pair_from_bearer(
         &self,
         cookies: &Cookies,
         csrf_token: &str,
@@ -643,7 +633,7 @@ impl TokenIssuer {
             .map_err(|e| HttpError::InvalidJwt(e))
     }
 
-    pub async fn export_claims_pair_from(
+    pub async fn extract_claims_pair_from(
         &self,
         cookies: &Cookies,
         headers: &HeaderMap,
@@ -659,7 +649,11 @@ impl TokenIssuer {
                 "Invalid Authorization header format"
             )))?;
 
-        self.export_claims_pair_from_bearer(cookies, csrf_token, validation)
+        self.extract_claims_pair_from_bearer(cookies, csrf_token, validation)
             .await
+    }
+
+    pub async fn decrypt_csrf_dump(&self, access_claims: &UserAccessClaims, addr: &SocketAddr, csrf_dump: &str) -> anyhow::Result<String> {
+        self.isser.read().await.decrypt_csrf_dump(access_claims, addr, csrf_dump)
     }
 }
