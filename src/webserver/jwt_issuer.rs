@@ -8,6 +8,7 @@ use cassry::{
     *,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
+use postcard;
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
 use std::{net::IpAddr, sync::Arc};
@@ -27,7 +28,7 @@ pub trait DerivedFrom {
     fn get_derived_from(&self) -> Uuid;
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone)]
 pub struct UserPayload {
     pub derived_from: [u8; 16],
 
@@ -51,9 +52,8 @@ impl Serialize for UserPayload {
     where
         S: Serializer,
     {
-        let config = bincode::config::standard();
-        let encoded = bincode::encode_to_vec(self, config).map_err(|e| {
-            serde::ser::Error::custom(format!("bincode serialization failed: {}", e))
+        let encoded = postcard::to_stdvec(self).map_err(|e| {
+            serde::ser::Error::custom(format!("postcard serialization failed: {}", e))
         })?;
         let base64_str = base64::engine::general_purpose::STANDARD.encode(&encoded);
         serializer.serialize_str(&base64_str)
@@ -65,18 +65,16 @@ impl<'de> Deserialize<'de> for UserPayload {
     where
         D: Deserializer<'de>,
     {
-        let config = bincode::config::standard();
         let base64_str = String::deserialize(deserializer)?;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&base64_str)
             .map_err(|e| serde::de::Error::custom(format!("base64 decoding failed: {}", e)))?;
-        bincode::decode_from_slice(&decoded, config)
-            .map(|(result, _)| result)
-            .map_err(|e| serde::de::Error::custom(format!("bincode deserialization failed: {}", e)))
+        postcard::from_bytes(&decoded)
+            .map_err(|e| serde::de::Error::custom(format!("postcard deserialization failed: {}", e)))
     }
 }
 
-#[derive(Debug, Default, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Default, Clone)]
 pub struct AccessPayload {
     pub derived_from: [u8; 16],
 
@@ -95,9 +93,8 @@ impl Serialize for AccessPayload {
     where
         S: Serializer,
     {
-        let config = bincode::config::standard();
-        let encoded = bincode::encode_to_vec(self, config).map_err(|e| {
-            serde::ser::Error::custom(format!("bincode serialization failed: {}", e))
+        let encoded = postcard::to_stdvec(self).map_err(|e| {
+            serde::ser::Error::custom(format!("postcard serialization failed: {}", e))
         })?;
         let base64_str = base64::engine::general_purpose::STANDARD.encode(&encoded);
         serializer.serialize_str(&base64_str)
@@ -109,14 +106,12 @@ impl<'de> Deserialize<'de> for AccessPayload {
     where
         D: Deserializer<'de>,
     {
-        let config = bincode::config::standard();
         let base64_str = String::deserialize(deserializer)?;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&base64_str)
             .map_err(|e| serde::de::Error::custom(format!("base64 decoding failed: {}", e)))?;
-        bincode::decode_from_slice(&decoded, config)
-            .map(|(result, _)| result)
-            .map_err(|e| serde::de::Error::custom(format!("bincode deserialization failed: {}", e)))
+        postcard::from_bytes(&decoded)
+            .map_err(|e| serde::de::Error::custom(format!("postcard deserialization failed: {}", e)))
     }
 }
 
@@ -324,8 +319,7 @@ impl TokenIssuerImpl {
         access_claims: &UserAccessClaims,
         addr: &IpAddr,
     ) -> anyhow::Result<Vec<u8>> {
-        let config = bincode::config::standard();
-        let addr = bincode::encode_to_vec(addr, config)?;
+        let addr = postcard::to_stdvec(addr)?;
         let bytes = [access_claims.jti.as_bytes(), addr.as_slice()].concat();
         let nonce = util::hmac_blake2b_with_len(
             self.csrf_dump_key.expose_secret().as_bytes(),

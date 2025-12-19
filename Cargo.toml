@@ -54,7 +54,7 @@ base64 = "0.22"
 bitflags = "2"
 rand = { version = "0.9", features = ["std"] }
 url = "2.5"
-bincode = { version = "2", features = ["serde"] }
+postcard = { version = "1", features = ["use-std"] }
 uuid = "1"
 
 ta = "0.5.0"
