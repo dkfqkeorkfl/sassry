@@ -450,7 +450,7 @@ impl TokenIssuerImpl {
 
         let csrf_token = self
             .csrf_isser
-            .generate_jwt_with_nonce(&csrf_claims, csrf_claims.jti.as_bytes())?;
+            .generate_jwt_with_nonce(&csrf_claims, access_claims.jti.as_bytes())?;
         let nonce = self.generate_dump_nonce(access_claims, &csrf_claims.payload.login_ip)?;
         let encrypted = util::encrypt_str_by_aes_gcm_128(
             access_claims.jti.as_bytes(),
