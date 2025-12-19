@@ -524,35 +524,35 @@ impl Websocket {
     }
 
     pub async fn send(&self, message: Message) -> anyhow::Result<()> {
-        if self.is_connected().await == false {
-            return Err(anyhowln!("websocket is disconnected"));
-        }
-
-        self.conn.send(message).await
+        self.conn.send(message).await.map_err(|e| {
+            anyhowln!(
+                "[ws:{}] occur error for send message : {}",
+                self.get_uuid(),
+                e.to_string()
+            )
+        })
     }
 
     pub async fn send_text(&self, text: String) -> anyhow::Result<()> {
-        if self.is_connected().await == false {
-            return Err(anyhowln!("websocket is disconnected"));
-        }
-
         self.conn.send(Message::Text(text)).await
     }
 
     pub async fn close(&self, param: Option<(u16, String)>) -> anyhow::Result<()> {
-        if self.is_connected().await == false {
-            return Err(anyhowln!("websocket is already disconnected"));
-        }
-
-        self.conn.close(param).await
+        self.conn.close(param).await.map_err(|e| {
+            anyhowln!(
+                "[ws:{}] occur error for close websocket : {}",
+                self.get_uuid(),
+                e.to_string()
+            )
+        })
     }
 
     pub async fn is_connected(&self) -> bool {
         self.conn.is_connected().await
     }
 
-    pub fn get_param(&self) -> Arc<WebsocketParams> {
-        self.param.clone()
+    pub fn get_param(&self) -> &Arc<WebsocketParams> {
+        &self.param
     }
 
     pub fn get_param_as_connect(&self) -> Option<&ConnectParams> {
