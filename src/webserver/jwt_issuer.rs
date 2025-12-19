@@ -1,15 +1,14 @@
 use super::error::HttpError;
 use axum::{extract::FromRequestParts, http::HeaderMap};
-use base64::engine::Engine;
 use cassry::{
+    base64::Engine,
     chrono::{DateTime, Utc},
     ring::hmac,
     secrecy::{ExposeSecret, SecretString},
     *,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
-use postcard;
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
 use std::{net::IpAddr, sync::Arc};
 use tower_cookies::Cookies;
@@ -28,7 +27,8 @@ pub trait DerivedFrom {
     fn get_derived_from(&self) -> Uuid;
 }
 
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPayload {
     pub derived_from: [u8; 16],
 
@@ -36,6 +36,7 @@ pub struct UserPayload {
     pub role: u64,
     pub nick: String,
 
+    #[serde(with = "serialization::ipaddr_bytes")]
     pub login_ip: IpAddr,
     pub login_at: i64,
     pub payload_created_at: i64,
@@ -47,34 +48,7 @@ impl DerivedFrom for UserPayload {
     }
 }
 
-impl Serialize for UserPayload {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let encoded = postcard::to_stdvec(self).map_err(|e| {
-            serde::ser::Error::custom(format!("postcard serialization failed: {}", e))
-        })?;
-        let base64_str = base64::engine::general_purpose::STANDARD.encode(&encoded);
-        serializer.serialize_str(&base64_str)
-    }
-}
-
-impl<'de> Deserialize<'de> for UserPayload {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let base64_str = String::deserialize(deserializer)?;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&base64_str)
-            .map_err(|e| serde::de::Error::custom(format!("base64 decoding failed: {}", e)))?;
-        postcard::from_bytes(&decoded)
-            .map_err(|e| serde::de::Error::custom(format!("postcard deserialization failed: {}", e)))
-    }
-}
-
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessPayload {
     pub derived_from: [u8; 16],
 
@@ -85,33 +59,6 @@ pub struct AccessPayload {
 impl DerivedFrom for AccessPayload {
     fn get_derived_from(&self) -> Uuid {
         Uuid::from_bytes(self.derived_from.clone())
-    }
-}
-
-impl Serialize for AccessPayload {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let encoded = postcard::to_stdvec(self).map_err(|e| {
-            serde::ser::Error::custom(format!("postcard serialization failed: {}", e))
-        })?;
-        let base64_str = base64::engine::general_purpose::STANDARD.encode(&encoded);
-        serializer.serialize_str(&base64_str)
-    }
-}
-
-impl<'de> Deserialize<'de> for AccessPayload {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let base64_str = String::deserialize(deserializer)?;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&base64_str)
-            .map_err(|e| serde::de::Error::custom(format!("base64 decoding failed: {}", e)))?;
-        postcard::from_bytes(&decoded)
-            .map_err(|e| serde::de::Error::custom(format!("postcard deserialization failed: {}", e)))
     }
 }
 
@@ -144,7 +91,7 @@ pub struct UserRefreshClaims {
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct UserClaimsFrame<T: DerivedFrom> {
+pub struct UserClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
     /// 토큰 고유 ID
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
@@ -152,10 +99,11 @@ pub struct UserClaimsFrame<T: DerivedFrom> {
     #[serde_as(as = "TimestampSeconds")]
     pub exp: DateTime<Utc>,
 
+    #[serde(with = "serialization::postcard_base64")]
     pub payload: T,
 }
 
-impl<T: DerivedFrom> DerivedFrom for UserClaimsFrame<T> {
+impl<T: DerivedFrom + Serialize + DeserializeOwned> DerivedFrom for UserClaimsFrame<T> {
     fn get_derived_from(&self) -> Uuid {
         self.payload.get_derived_from()
     }
@@ -255,11 +203,43 @@ impl JwtIssuer {
     pub fn get_secret(&self) -> SecretString {
         self.secret.clone()
     }
+    
+    pub fn generate_jwt_with_nonce<T: Serialize>(
+        &self,
+        claims: &T,
+        nonce: &[u8],
+    ) -> anyhow::Result<String> {
+        let arr = self.secret.expose_secret().as_bytes().try_into()?;
+        let mut hasher = blake3::Hasher::new_keyed(&arr);
+        hasher.update(nonce);
+        let hash = hasher.finalize();
 
-    pub fn compute_hash(&self, data: &str) -> anyhow::Result<String> {
-        let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret.expose_secret().as_bytes());
-        let tag = hmac::sign(&key, data.as_bytes());
-        Ok(hex::encode(tag))
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            claims,
+            &EncodingKey::from_secret(hash.as_bytes()),
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    pub fn verify_with_nonce<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        nonce: &[u8],
+        validation: Option<Validation>,
+    ) -> anyhow::Result<T> {
+        let arr = self.secret.expose_secret().as_bytes().try_into()?;
+        let mut hasher = blake3::Hasher::new_keyed(&arr);
+        hasher.update(nonce);
+        let hash = hasher.finalize();
+
+        jsonwebtoken::decode::<T>(
+            token,
+            &DecodingKey::from_secret(hash.as_bytes()),
+            &validation.unwrap_or_default(),
+        )
+        .map(|token_data| token_data.claims)
+        .map_err(anyhow::Error::from)
     }
 
     pub fn generate_jwt<T: Serialize>(&self, claims: &T) -> anyhow::Result<String> {
@@ -321,8 +301,8 @@ impl TokenIssuerImpl {
     ) -> anyhow::Result<Vec<u8>> {
         let addr = postcard::to_stdvec(addr)?;
         let bytes = [access_claims.jti.as_bytes(), addr.as_slice()].concat();
-        let nonce = util::hmac_blake2b_with_len(
-            self.csrf_dump_key.expose_secret().as_bytes(),
+        let nonce = util::hmac_blake3_with_len(
+            self.csrf_dump_key.expose_secret().as_bytes().try_into()?,
             bytes.as_slice(),
             12,
         )?;
@@ -372,9 +352,11 @@ impl TokenIssuerImpl {
         let access_claims = self
             .access_isser
             .verify::<UserAccessClaims>(access_token, validation.clone())?;
-        let csrf_claims = self
-            .csrf_isser
-            .verify::<UserCsrfClaims>(csrf_token, validation)?;
+        let csrf_claims = self.csrf_isser.verify_with_nonce::<UserCsrfClaims>(
+            csrf_token,
+            access_claims.jti.as_bytes(),
+            validation,
+        )?;
 
         if csrf_claims.payload.get_derived_from() != access_claims.jti {
             return Err(anyhow::anyhow!(
@@ -466,7 +448,9 @@ impl TokenIssuerImpl {
             payload: user_payload,
         };
 
-        let csrf_token = self.csrf_isser.generate_jwt(&csrf_claims)?;
+        let csrf_token = self
+            .csrf_isser
+            .generate_jwt_with_nonce(&csrf_claims, csrf_claims.jti.as_bytes())?;
         let nonce = self.generate_dump_nonce(access_claims, &csrf_claims.payload.login_ip)?;
         let encrypted = util::encrypt_str_by_aes_gcm_128(
             access_claims.jti.as_bytes(),

@@ -50,11 +50,9 @@ oauth2 = "5"
 # others
 # dashmap = "6.1.0"
 
-base64 = "0.22"
 bitflags = "2"
 rand = { version = "0.9", features = ["std"] }
 url = "2.5"
-postcard = { version = "1", features = ["use-std"] }
 uuid = "1"
 
 ta = "0.5.0"

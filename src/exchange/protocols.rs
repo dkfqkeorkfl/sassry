@@ -1791,10 +1791,7 @@ impl MASubscribeBuilder {
 pub enum SubscribeResult {
     None,
     Authorized(bool),
-    #[serde(
-        serialize_with = "serialize_anyhow_error",
-        deserialize_with = "deserialize_anyhow_error"
-    )]
+    #[serde(with = "anyhow_error")]
     Err(anyhow::Error),
     Orderbook(OrderBook),
     PublicTrades(HashMap<MarketID, PublicTradeSet>),
