@@ -214,16 +214,61 @@ pub trait ConnectionItf: Send + Sync + 'static {
     fn get_created(&self) -> &DateTime<Utc>;
 }
 
+struct Eject {
+    sendping: RwLock<chrono::DateTime<Utc>>,
+    recvping: RwLock<chrono::DateTime<Utc>>,
+    timeout: chrono::Duration,
+}
+
+impl Eject {
+    pub fn new(timeout: chrono::Duration) -> Self {
+        Self {
+            sendping: RwLock::new(Utc::now()),
+            recvping: RwLock::new(Utc::now()),
+            timeout: timeout,
+        }
+    }
+
+    pub async fn is_timeout(&self) -> bool {
+        self.laytency().await > self.timeout
+    }
+
+    pub async fn laytency(&self) -> chrono::Duration {
+        let send = *self.sendping.read().await;
+        let recv = *self.recvping.read().await;
+        if send > recv {
+            Utc::now() - send
+        } else {
+            recv - send
+        }
+    }
+
+    pub async fn ping(&self) -> Message {
+        let now = Utc::now();
+        *self.sendping.write().await = now;
+        let millis = now.timestamp_millis();
+        let payload =
+            postcard::to_stdvec(&millis).expect("occur error for serialize ping to bytes");
+        Message::Ping(payload)
+    }
+
+    pub async fn update_pong(&self, payload: &Vec<u8>) -> anyhow::Result<()> {
+        let ping_millis: i64 = postcard::from_bytes(payload)?;
+        if self.sendping.read().await.timestamp_millis() == ping_millis {
+            *self.recvping.write().await = Utc::now();
+        }
+        Ok(())
+    }
+}
+
 //Behavior
 struct ConnectionReal {
     param: Arc<WebsocketParams>,
     sender: UnboundedSender<Message>,
-    is_connect: RwArc<bool>,
 
-    uuid: String,
+    uuid: (uuid::Uuid, String),
     created: DateTime<Utc>,
-    sendping: RwLock<chrono::DateTime<Utc>>,
-    recvping: RwLock<chrono::DateTime<Utc>>,
+    eject: Arc<Eject>,
 }
 
 #[async_trait]
@@ -249,11 +294,11 @@ impl ConnectionItf for ConnectionReal {
     }
 
     async fn is_connected(&self) -> bool {
-        self.is_connect.read().await.clone()
+        !self.sender.is_closed()
     }
 
     fn get_uuid(&self) -> &str {
-        &self.uuid
+        &self.uuid.1
     }
 
     fn get_created(&self) -> &DateTime<Utc> {
@@ -264,34 +309,6 @@ impl ConnectionItf for ConnectionReal {
 impl ConnectionReal {
     pub fn get_param(&self) -> &WebsocketParams {
         &self.param
-    }
-
-    pub async fn latency(&self) -> chrono::Duration {
-        let send = *self.sendping.read().await;
-        let recv = *self.recvping.read().await;
-        if send > recv {
-            Utc::now() - send
-        } else {
-            recv - send
-        }
-    }
-
-    pub async fn ping(&self) -> anyhow::Result<()> {
-        let now = Utc::now();
-        let ping = json!(now.timestamp_millis());
-        let payload = serde_json::to_vec(&ping)?;
-        *self.sendping.write().await = now;
-        self.send(Message::Ping(payload)).await
-    }
-
-    pub async fn update_pong(&self, mili: i64) -> bool {
-        let send = *self.sendping.read().await;
-        if mili == send.timestamp_millis() {
-            *self.recvping.write().await = Utc::now();
-            true
-        } else {
-            false
-        }
     }
 
     fn init<S, M, E, F, Fut>(param: Arc<WebsocketParams>, stream: S, callback: F) -> Arc<Self>
@@ -305,119 +322,89 @@ impl ConnectionReal {
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let callback = Arc::new(callback);
-        let (mut write_half, mut read_half) = stream.split();
-        let (sender, mut receiver) = unbounded_channel::<Message>();
+        let (write_half, read_half) = stream.split();
+        let (sender, receiver) = unbounded_channel::<Message>();
 
-        let now = Utc::now();
-        let is_connected = Arc::new(RwLock::new(true));
+        let uuid = uuid::Uuid::new_v4();
+        let eject = Arc::new(Eject::new(param.get_pong_timeout().clone()));
         let ws = Arc::from(Self {
-            uuid: uuid::Uuid::new_v4().to_string(),
-            created: now,
+            uuid: (uuid, uuid.to_string()),
+            created: Utc::now(),
 
             param: param,
-            sender: sender.clone(),
-            is_connect: is_connected.clone(),
-
-            sendping: RwLock::new(now),
-            recvping: RwLock::new(now),
+            sender: sender,
+            eject: eject,
         });
 
-        let ctx = (
-            Arc::downgrade(&ws),
-            is_connected.clone(),
-            ws.get_param().get_ping_interval().clone(),
-        );
+        let wpt_ws = Arc::downgrade(&ws);
         tokio::spawn(async move {
-            let (wpt_ws, is_connected, ping_interval) = ctx;
-            tokio::time::sleep(ping_interval.clone()).await;
+            while let Some(ws) = wpt_ws.upgrade().filter(|ws| !ws.sender.is_closed()) {
+                let ping_interval = ws.get_param().get_ping_interval().clone();
+                tokio::time::sleep(ping_interval).await;
 
-            while *is_connected.read().await {
-                let result = if let Some(ptr) = wpt_ws.upgrade() {
-                    if ptr.latency().await > *ptr.get_param().get_pong_timeout() {
-                        Err(anyhowln!("occur eject for ping test"))
-                    } else {
-                        ptr.ping().await
-                    }
-                } else {
-                    Err(anyhowln!("websocket point is NULL"))
-                };
-
-                if let Err(e) = result {
-                    cassry::info!("{}", e.to_string());
-
-                    let is_connected = is_connected.read().await;
-                    let result = if *is_connected {
-                        sender.send(Message::Close(None))
-                    } else {
-                        std::result::Result::Ok(())
-                    };
-
-                    if let Err(e) = result {
-                        cassry::error!("{:?}", e.0);
-                    }
-                }
-                tokio::time::sleep(ping_interval.clone()).await;
-            }
-        });
-
-        let ctx = (Arc::downgrade(&ws), is_connected.clone(), callback.clone());
-        tokio::spawn(async move {
-            let (wpt_ws, is_connected, callback) = ctx;
-            while let Some(message) = receiver
-                .recv()
-                .await
-                .filter(|msg| msg.is_close() || wpt_ws.upgrade().is_some())
-            {
-                if *is_connected.read().await == false {
+                if ws.eject.is_timeout().await {
+                    ws.sender.closed().await;
                     break;
-                } else if let Err(e) = write_half.send(message.into()).await {
-                    if let Some(spt) = wpt_ws.upgrade() {
-                        callback(spt, Signal::Error(e.into())).await;
-                    }
+                }
+
+                let message = ws.eject.ping().await;
+                // sender가 에러나는 경우는 sender가 닫혔을 때이므로 처리하지 않음
+                if let Err(e) = ws.sender.send(message) {
+                    cassry::error!(
+                        "[ws:{}] it's failed to send ping : {}",
+                        uuid.to_string(),
+                        e.to_string()
+                    );
+                    break;
                 }
             }
         });
 
-        let ctx = (Arc::downgrade(&ws), callback);
+        let ctx = (uuid.clone(), receiver, write_half);
         tokio::spawn(async move {
-            let (wpt_ws, callback) = ctx;
+            let (uuid, mut receiver, mut write_half) = ctx;
+
+            while let Some(message) = receiver.recv().await {
+                if let Err(e) = write_half.send(message.into()).await {
+                    cassry::error!(
+                        "[ws:{}] it's failed to send message : {}",
+                        uuid.to_string(),
+                        e.to_string()
+                    );
+                    break;
+                }
+            }
+        });
+
+        let ctx = (Arc::downgrade(&ws), read_half, callback);
+        tokio::spawn(async move {
+            let (wpt_ws, mut read_half, callback) = ctx;
             if let Some(spt) = wpt_ws.upgrade() {
                 callback(spt, Signal::Opened).await;
             }
 
-            while let Some((message, spt)) = read_half.next().await.zip(wpt_ws.upgrade()) {
-                let signal = match message.map(Message::from) {
-                    std::result::Result::Ok(msg) => {
-                        if let Message::Pong(payload) = msg {
-                            let result = serde_json::from_slice::<serde_json::Value>(&payload[..])
-                                .map_err(anyhow::Error::from)
-                                .and_then(|json| {
-                                    let sendtime = json.as_i64().ok_or(anyhowln!(
-                                        "invalid data from json to i64 for pong"
-                                    ))?;
-                                    Ok(sendtime)
-                                });
+            while let Some((result, ptr)) = read_half.next().await.zip(wpt_ws.upgrade()) {
+                let signal = result
+                    .map(|e| Signal::Received(e.into()))
+                    .inspect_err(|e| {
+                        cassry::error!("[ws:{}] occur error : {}", uuid.to_string(), e.to_string())
+                    })
+                    .unwrap_or_else(|e| Signal::Error(e.into()));
 
-                            match result {
-                                anyhow::Result::Ok(mili) => {
-                                    spt.update_pong(mili).await;
-                                    Signal::Received(Message::Pong(payload))
-                                }
-                                Err(e) => Signal::Error(e),
-                            }
-                        } else {
-                            cassry::trace!("recved : {:?}", msg);
-                            Signal::Received(msg)
+                match &signal {
+                    Signal::Received(message) => {
+                        if let Message::Pong(payload) = message {
+                            let _ = ptr.eject.update_pong(payload).await;
                         }
                     }
-                    Err(e) => Signal::Error(e.into()),
-                };
+                    _ => {}
+                }
 
-                callback(spt, signal).await;
+                callback(ptr, signal).await;
             }
 
-            *is_connected.write().await = false;
             if let Some(spt) = wpt_ws.upgrade() {
+                spt.sender.closed().await;
                 callback(spt, Signal::Closed).await;
             }
         });
