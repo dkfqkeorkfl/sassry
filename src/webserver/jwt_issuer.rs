@@ -501,7 +501,7 @@ impl TokenIssuerImpl {
         };
         let access_jti = Uuid::new_v4();
         let access_claims = UserAccessClaims {
-            jti: access_jti,
+            jti: access_jti.clone(),
             exp: now + self.access_ttl,
             payload: access_payload,
         };
