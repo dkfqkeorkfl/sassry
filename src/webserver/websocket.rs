@@ -266,6 +266,7 @@ struct ConnectionReal {
     param: Arc<WebsocketParams>,
     sender: UnboundedSender<Message>,
 
+    is_connected: RwArc<bool>,
     uuid: (uuid::Uuid, String),
     created: DateTime<Utc>,
     eject: Arc<Eject>,
@@ -294,7 +295,7 @@ impl ConnectionItf for ConnectionReal {
     }
 
     async fn is_connected(&self) -> bool {
-        !self.sender.is_closed()
+        *self.is_connected.read().await
     }
 
     fn get_uuid(&self) -> &str {
@@ -327,6 +328,7 @@ impl ConnectionReal {
 
         let uuid = uuid::Uuid::new_v4();
         let eject = Arc::new(Eject::new(param.get_pong_timeout().clone()));
+        let is_connected = Arc::new(RwLock::new(true));
         let ws = Arc::from(Self {
             uuid: (uuid, uuid.to_string()),
             created: Utc::now(),
@@ -334,37 +336,52 @@ impl ConnectionReal {
             param: param,
             sender: sender,
             eject: eject,
+            is_connected: is_connected.clone(),
         });
 
         let wpt_ws = Arc::downgrade(&ws);
         tokio::spawn(async move {
-            while let Some(ws) = wpt_ws.upgrade().filter(|ws| !ws.sender.is_closed()) {
-                let ping_interval = ws.get_param().get_ping_interval().clone();
-                tokio::time::sleep(ping_interval).await;
+            let ping_interval = if let Some(ws) = wpt_ws.upgrade() {
+                ws.get_param().get_ping_interval().clone()
+            } else {
+                return;
+            };
 
-                if ws.eject.is_timeout().await {
-                    ws.sender.closed().await;
-                    break;
-                }
+            loop {
+                tokio::time::sleep(ping_interval.clone()).await;
+                if let Some(ws) = wpt_ws.upgrade().filter(|ws| !ws.sender.is_closed()) {
+                    if ws.eject.is_timeout().await {
+                        ws.sender.closed().await;
+                        break;
+                    }
 
-                let message = ws.eject.ping().await;
-                // sender가 에러나는 경우는 sender가 닫혔을 때이므로 처리하지 않음
-                if let Err(e) = ws.sender.send(message) {
-                    cassry::error!(
-                        "[ws:{}] it's failed to send ping : {}",
-                        uuid.to_string(),
-                        e.to_string()
-                    );
+                    let message = ws.eject.ping().await;
+                    // sender가 에러나는 경우는 sender가 닫혔을 때이므로 처리하지 않음
+                    if let Err(e) = ws.sender.send(message) {
+                        cassry::error!(
+                            "[ws:{}] it's failed to send ping : {}",
+                            uuid.to_string(),
+                            e.to_string()
+                        );
+                        break;
+                    }
+                } else {
                     break;
                 }
             }
         });
 
-        let ctx = (uuid.clone(), receiver, write_half);
+        let ctx = (uuid.clone(), receiver, write_half, is_connected.clone());
         tokio::spawn(async move {
-            let (uuid, mut receiver, mut write_half) = ctx;
+            let (uuid, mut receiver, mut write_half, is_connected) = ctx;
 
-            while let Some(message) = receiver.recv().await {
+            while let (Some(message), is_connected) =
+                (receiver.recv().await, *is_connected.read().await)
+            {
+                if !is_connected {
+                    break;
+                }
+
                 if let Err(e) = write_half.send(message.into()).await {
                     cassry::error!(
                         "[ws:{}] it's failed to send message : {}",
@@ -404,7 +421,7 @@ impl ConnectionReal {
             }
 
             if let Some(spt) = wpt_ws.upgrade() {
-                spt.sender.closed().await;
+                *spt.is_connected.write().await = false;
                 callback(spt, Signal::Closed).await;
             }
         });
