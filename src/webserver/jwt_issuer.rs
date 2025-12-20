@@ -203,7 +203,7 @@ impl JwtIssuer {
     pub fn get_secret(&self) -> SecretString {
         self.secret.clone()
     }
-    
+
     pub fn generate_jwt_with_nonce<T: Serialize>(
         &self,
         claims: &T,
@@ -342,6 +342,19 @@ impl TokenIssuerImpl {
             .verify::<UserAccessClaims>(access_token, validation)
     }
 
+    pub fn verify_jwt_csrf(
+        &self,
+        access_claims: &UserAccessClaims,
+        csrf_token: &str,
+        validation: Option<Validation>,
+    ) -> anyhow::Result<UserCsrfClaims> {
+        self.csrf_isser.verify_with_nonce::<UserCsrfClaims>(
+            csrf_token,
+            access_claims.jti.as_bytes(),
+            validation,
+        )
+    }
+
     /// JWT 토큰 검증 (유효성, 만료 등)
     pub fn verify_jwt_pair(
         &self,
@@ -352,20 +365,7 @@ impl TokenIssuerImpl {
         let access_claims = self
             .access_isser
             .verify::<UserAccessClaims>(access_token, validation.clone())?;
-        let csrf_claims = self.csrf_isser.verify_with_nonce::<UserCsrfClaims>(
-            csrf_token,
-            access_claims.jti.as_bytes(),
-            validation,
-        )?;
-
-        if csrf_claims.payload.get_derived_from() != access_claims.jti {
-            return Err(anyhow::anyhow!(
-                "mismatch csrf token: uid={}, access_created_at={}, csrf_created_at={}",
-                csrf_claims.payload.uid,
-                access_claims.payload.payload_created_at,
-                csrf_claims.payload.payload_created_at,
-            ));
-        }
+        let csrf_claims = self.verify_jwt_csrf(&access_claims, csrf_token, validation)?;
         Ok(ClaimsPair {
             access_claims,
             csrf_claims,
@@ -587,6 +587,15 @@ impl TokenIssuer {
             prev_refresh_clams,
             user_payload,
         )
+    }
+
+    pub async fn verify_jwt_csrf(
+        &self,
+        access_claims: &UserAccessClaims,
+        csrf_token: &str,
+        validation: Option<Validation>,
+    ) -> anyhow::Result<UserCsrfClaims> {
+        self.isser.read().await.verify_jwt_csrf(access_claims, csrf_token, validation)
     }
 
     pub async fn extract_access_claims_from(
