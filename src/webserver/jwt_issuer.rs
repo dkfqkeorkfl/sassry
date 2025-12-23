@@ -3,6 +3,7 @@ use axum::{extract::FromRequestParts, http::HeaderMap};
 use cassry::{
     base64::Engine,
     chrono::{DateTime, Utc},
+    moka::future::Cache,
     ring::hmac,
     secrecy::{ExposeSecret, SecretString},
     *,
@@ -10,7 +11,7 @@ use cassry::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
-use std::{net::IpAddr, sync::Arc};
+use std::{net::IpAddr, sync::Arc, u64};
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
@@ -274,6 +275,7 @@ pub struct TokenIssuerImpl {
     csrf_dump_key: SecretString,
     access_ttl: chrono::Duration,
     refresh_ttl: chrono::Duration,
+    blocked_refreshs: Cache<Uuid, ()>,
 }
 
 impl TokenIssuerImpl {
@@ -292,6 +294,14 @@ impl TokenIssuerImpl {
 
     pub fn get_refresh_ttl(&self) -> &chrono::Duration {
         &self.refresh_ttl
+    }
+
+    pub async fn insert_block(&self, jti: &Uuid) {
+        self.blocked_refreshs.insert(jti.clone(), ()).await;
+    }
+
+    pub fn contains_block(&self, jti: &Uuid) -> bool {
+        self.blocked_refreshs.contains_key(jti)
     }
 
     pub fn generate_dump_nonce(
@@ -330,6 +340,11 @@ impl TokenIssuerImpl {
             csrf_dump_key,
             access_ttl,
             refresh_ttl,
+            blocked_refreshs: moka::future::CacheBuilder::new(u64::MAX)
+                .time_to_live(std::time::Duration::from_secs(
+                    access_ttl.num_seconds() as u64
+                ))
+                .build(),
         }
     }
 
@@ -340,6 +355,12 @@ impl TokenIssuerImpl {
     ) -> anyhow::Result<UserAccessClaims> {
         self.access_isser
             .verify::<UserAccessClaims>(access_token, validation)
+            .and_then(|claims| {
+                if self.contains_block(&claims.payload.get_derived_from()) {
+                    return Err(anyhow::anyhow!("Blocked refresh token"));
+                }
+                Ok(claims)
+            })
     }
 
     pub fn verify_jwt_csrf(
@@ -362,10 +383,11 @@ impl TokenIssuerImpl {
         csrf_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<ClaimsPair> {
-        let access_claims = self
-            .access_isser
-            .verify::<UserAccessClaims>(access_token, validation.clone())?;
+        let access_claims = self.verify_jwt_access(access_token, validation.clone())?;
         let csrf_claims = self.verify_jwt_csrf(&access_claims, csrf_token, validation)?;
+        if self.contains_block(&access_claims.jti) {
+            return Err(anyhow::anyhow!("Invalid access token"));
+        }
         Ok(ClaimsPair {
             access_claims,
             csrf_claims,
@@ -547,6 +569,14 @@ impl TokenIssuer {
         "sub"
     }
 
+    pub async fn insert_block(&self, jti: &Uuid) {
+        self.isser.write().await.insert_block(jti).await;
+    }
+
+    pub async fn contains_block(&self, jti: &Uuid) -> bool {
+        self.isser.read().await.contains_block(jti)
+    }
+
     /// 새로운 JwtManager 인스턴스 생성
     pub fn new(
         name: String,
@@ -595,7 +625,10 @@ impl TokenIssuer {
         csrf_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<UserCsrfClaims> {
-        self.isser.read().await.verify_jwt_csrf(access_claims, csrf_token, validation)
+        self.isser
+            .read()
+            .await
+            .verify_jwt_csrf(access_claims, csrf_token, validation)
     }
 
     pub async fn extract_access_claims_from(
