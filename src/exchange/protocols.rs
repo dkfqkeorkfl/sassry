@@ -1952,37 +1952,27 @@ impl ExchangeContext {
         oid: &str,
         _kind: &MarketID,
     ) -> anyhow::Result<Option<Arc<(OrderPtr, MarketPtr)>>> {
-        let str = self.recorder.get(oid.to_string()).await?;
-        if str.is_none() {
-            return Ok(None);
+        if let Some((market_id, order)) = self.recorder.get_json::<(MarketID, OrderPtr)>(oid.to_string()).await? {
+            let market = self
+                .find_market(&market_id)
+                .await
+                .ok_or(anyhowln!("invalid market"))?;
+            let ret = Arc::new((order, market));
+            self.storage
+                .orders
+                .insert(oid.to_string(), ret.clone())
+                .await;
+            Ok(Some(ret))
+        } else {
+            Ok(None)
         }
-
-        let mut value = serde_json::Value::from_str(&str.unwrap())?;
-        let items = value.as_array_mut().ok_or(anyhowln!("invalid value"))?;
-
-        let order = serde_json::from_value::<OrderPtr>(std::mem::replace(
-            &mut items[0],
-            serde_json::Value::default(),
-        ))?;
-        let kind = serde_json::from_value(std::mem::replace(
-            &mut items[1],
-            serde_json::Value::default(),
-        ))?;
-        let market = self
-            .find_market(&kind)
-            .await
-            .ok_or(anyhowln!("invalid market"))?;
-        let ret = Arc::new((order.clone(), market.clone()));
-        self.cache_order(ret.clone()).await?;
-        Ok(Some(ret))
     }
 
     pub async fn save_db_order(&self, order: OrderPtr, market: MarketPtr) -> anyhow::Result<()> {
-        let order_val = serde_json::to_value(&order)?;
-        let market_val = serde_json::to_value(&market.market_id)?;
-        let items = vec![order_val, market_val];
-        let str = serde_json::to_string(&items)?;
-        self.recorder.put(order.oid.clone(), str).await?;
+        let oid = order.oid.clone();
+        self.recorder
+            .put_json(oid, &(market.market_id.clone(), order))
+            .await?;
         Ok(())
     }
 

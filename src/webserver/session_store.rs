@@ -56,7 +56,10 @@ impl SessionStore for FastSessionStore {
                 serde_json::to_string(record).map_err(|e| SeesionError::Encode(e.to_string()))?;
 
             self.local_cache
-                .put(record.id.to_string(), session_json.clone())
+                .put(
+                    record.id.to_string().into_bytes(),
+                    session_json.clone().into_bytes(),
+                )
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
 
@@ -83,11 +86,15 @@ impl SessionStore for FastSessionStore {
         // 로컬 캐시에 저장 (기존 세션 업데이트)
 
         let result = async {
+            // 로컬 캐시에 저장
             let session_json =
                 serde_json::to_string(record).map_err(|e| SeesionError::Encode(e.to_string()))?;
 
             self.local_cache
-                .put(record.id.to_string(), session_json.clone())
+                .put(
+                    record.id.to_string().into_bytes(),
+                    session_json.clone().into_bytes(),
+                )
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
             Ok::<_, SeesionError>(session_json)
@@ -112,28 +119,29 @@ impl SessionStore for FastSessionStore {
     async fn load(&self, session_id: &Id) -> Result<Option<Record>, SeesionError> {
         // 1. 로컬 캐시에서 조회
         let result = async {
-            if let Some(session_json) = self
+            if let Some(record) = self
                 .local_cache
-                .get(session_id.to_string())
+                .get_json::<Record>(session_id.to_string())
                 .await
                 .map_err(|e| SeesionError::Decode(e.to_string()))?
             {
-                if let Ok(record) = serde_json::from_str(&session_json) {
-                    return Ok(Some(record));
-                }
+                return Ok(Some(record));
             }
 
             // 2. moka 캐시에서 조회
             let key = Self::redis_key(session_id);
             if let Some(session_json) = self.redis.get(&key).await {
+                let result = serde_json::from_str::<Record>(&session_json)
+                    .map_err(|e| SeesionError::Decode(e.to_string()))?;
                 // moka 캐시에서 찾았다면 로컬 캐시에도 저장
-                if let Ok(record) = serde_json::from_str(&session_json) {
-                    self.local_cache
-                        .put(session_id.to_string(), session_json)
-                        .await
-                        .map_err(|e| SeesionError::Backend(e.to_string()))?;
-                    return Ok(Some(record));
-                }
+                self.local_cache
+                    .put(
+                        session_id.to_string().into_bytes(),
+                        session_json.into_bytes(),
+                    )
+                    .await
+                    .map_err(|e| SeesionError::Backend(e.to_string()))?;
+                return Ok(Some(result));
             }
             Ok::<Option<Record>, SeesionError>(None)
         }
@@ -153,7 +161,7 @@ impl SessionStore for FastSessionStore {
         // 로컬 캐시에서 삭제
         let result = async {
             self.local_cache
-                .delete(session_id.to_string())
+                .delete(session_id.to_string().into_bytes())
                 .await
                 .map_err(|e| SeesionError::Backend(e.to_string()))?;
             Ok::<_, SeesionError>(())
