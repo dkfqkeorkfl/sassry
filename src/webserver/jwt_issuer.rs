@@ -4,7 +4,6 @@ use cassry::{
     base64::Engine,
     chrono::{DateTime, Utc},
     moka::future::Cache,
-    ring::hmac,
     secrecy::{ExposeSecret, SecretString},
     *,
 };
@@ -16,9 +15,9 @@ use tower_cookies::Cookies;
 use uuid::Uuid;
 
 pub struct LoginParams {
-    pub uid: u64,
+    pub uid: i64,
     pub password: String,
-    pub role: u64,
+    pub role: i64,
 
     pub nick: String,
     pub login_ip: IpAddr,
@@ -33,8 +32,8 @@ pub trait DerivedFrom {
 pub struct UserPayload {
     pub derived_from: [u8; 16],
 
-    pub uid: u64,
-    pub role: u64,
+    pub uid: i64,
+    pub role: i64,
     pub nick: String,
 
     #[serde(with = "serialization::ipaddr_bytes")]
@@ -53,7 +52,7 @@ impl DerivedFrom for UserPayload {
 pub struct AccessPayload {
     pub derived_from: [u8; 16],
 
-    pub uid: u64,
+    pub uid: i64,
     pub payload_created_at: i64,
 }
 
@@ -77,7 +76,7 @@ pub struct UserRefreshClaims {
 
     /// 사용자 ID
     #[serde_as(as = "DisplayFromStr")]
-    pub sub: u64,
+    pub sub: i64,
     /// 발급 시간
     pub iat: i64,
 
@@ -85,7 +84,7 @@ pub struct UserRefreshClaims {
     #[serde_as(as = "DisplayFromStr")]
     pub env: IpAddr,
 
-    pub role: u64,
+    pub role: i64,
     pub failed: usize,
     pub password: String,
 }

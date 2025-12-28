@@ -6,7 +6,6 @@ use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use axum::extract::ws::{Message as AxumMessage, WebSocket as AxumWebsocket};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedSender},
     RwLock,
