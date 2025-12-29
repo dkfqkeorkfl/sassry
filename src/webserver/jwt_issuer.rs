@@ -66,6 +66,7 @@ impl DerivedFrom for AccessPayload {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserRefreshClaims {
     /// 토큰 고유 ID
+    #[serde(rename = "_id")]
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
     /// 토큰의 만료 시간(초 단위)
@@ -75,7 +76,6 @@ pub struct UserRefreshClaims {
     pub iss: String,
 
     /// 사용자 ID
-    #[serde_as(as = "DisplayFromStr")]
     pub sub: i64,
     /// 발급 시간
     pub iat: i64,

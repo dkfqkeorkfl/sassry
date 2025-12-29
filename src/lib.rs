@@ -4,7 +4,6 @@ pub mod tcpserver;
 pub mod webserver;
 pub mod oauths;
 
-
 pub use cassry;
 pub use cassry::*;
 
@@ -21,6 +20,7 @@ pub use rand;
 pub use oauth2;
 pub use uuid;
 pub use cassry_derive::ErrCode;
+pub use mongodb;
 
 #[cfg(debug_assertions)]
 pub const DEBUG_POST_FIX: &str = ".dev";

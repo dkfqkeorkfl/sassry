@@ -20,6 +20,7 @@ cassry-derive = { path = "../cassry/derive" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_with = { version = "3", features = ["chrono_0_4", "base64", "hex"] }
 thiserror = "2"
+mongodb = { version = "3", features = ["tracing-unstable"] }
 
 # tags
 async-trait = "0.1"
