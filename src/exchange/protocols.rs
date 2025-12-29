@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, VecDeque},
     fmt,
     hash::{Hash, Hasher},
-    str::FromStr,
     sync::Arc,
 };
 
@@ -1952,7 +1951,11 @@ impl ExchangeContext {
         oid: &str,
         _kind: &MarketID,
     ) -> anyhow::Result<Option<Arc<(OrderPtr, MarketPtr)>>> {
-        if let Some((market_id, order)) = self.recorder.get_json::<(MarketID, OrderPtr)>(oid.to_string()).await? {
+        if let Some((market_id, order)) = self
+            .recorder
+            .get_json::<(MarketID, OrderPtr)>(oid.to_string())
+            .await?
+        {
             let market = self
                 .find_market(&market_id)
                 .await
