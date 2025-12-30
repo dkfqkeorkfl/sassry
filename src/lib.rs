@@ -21,6 +21,7 @@ pub use oauth2;
 pub use uuid;
 pub use cassry_derive::ErrCode;
 pub use mongodb;
+pub use bson;
 
 #[cfg(debug_assertions)]
 pub const DEBUG_POST_FIX: &str = ".dev";

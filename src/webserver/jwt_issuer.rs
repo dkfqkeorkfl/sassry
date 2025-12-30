@@ -13,6 +13,7 @@ use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
 use std::{net::IpAddr, sync::Arc, u64};
 use tower_cookies::Cookies;
 use uuid::Uuid;
+use bson::serde_helpers::datetime::FromChrono04DateTime;
 
 pub struct LoginParams {
     pub uid: i64,
@@ -69,8 +70,9 @@ pub struct UserRefreshClaims {
     #[serde(rename = "_id")]
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
-    /// 토큰의 만료 시간(초 단위)
-    #[serde_as(as = "TimestampSeconds")]
+
+    /// 토큰의 만료 시간
+    #[serde_as(as = "FromChrono04DateTime")]
     pub exp: DateTime<Utc>,
     /// 발급자
     pub iss: String,
@@ -78,7 +80,8 @@ pub struct UserRefreshClaims {
     /// 사용자 ID
     pub sub: i64,
     /// 발급 시간
-    pub iat: i64,
+    #[serde_as(as = "FromChrono04DateTime")]
+    pub iat: DateTime<Utc>,
 
     /// 환경
     #[serde_as(as = "DisplayFromStr")]
@@ -95,7 +98,7 @@ pub struct UserClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
     /// 토큰 고유 ID
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
-    /// 토큰의 만료 시간(
+    /// 토큰의 만료 시간(jwt는 초단위 지원)
     #[serde_as(as = "TimestampSeconds")]
     pub exp: DateTime<Utc>,
 
@@ -402,7 +405,7 @@ impl TokenIssuerImpl {
             exp: now + self.refresh_ttl,
             iss: self.name.clone(),
             sub: params.uid,
-            iat: now.timestamp(),
+            iat: now,
             env: params.login_ip,
             role: params.role,
             failed: 0,
@@ -508,7 +511,7 @@ impl TokenIssuerImpl {
 
             iss: self.name.clone(),
             sub: prev_refresh_clams.sub,
-            iat: now.timestamp(),
+            iat: now,
             env: prev_refresh_clams.env,
             role: prev_refresh_clams.role,
             failed: prev_refresh_clams.failed,
