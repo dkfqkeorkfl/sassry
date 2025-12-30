@@ -1,21 +1,19 @@
 use std::{collections::HashMap, fmt, sync::Arc};
 
+use bson::serde_helpers::datetime::FromTime03OffsetDateTime;
+use cassry::*;
 use mongodb::{
     bson::{doc, Document},
     Client as MongoClient, Collection, Database,
 };
-use serde::{
-    de::{self, Deserializer},
-    Deserialize, Serialize, Serializer,
-};
+use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, DisplayFromStr};
 use tower_cookies::cookie::time::OffsetDateTime;
 use tower_sessions::{
     session::{Id, Record as TowerRecord},
     session_store::Error as SessionError,
     SessionStore,
 };
-
-use cassry::*;
 
 #[derive(Clone)]
 pub struct Client {
@@ -64,11 +62,15 @@ impl Client {
 
 /// MongoDB에 저장할 Record 구조체 (역직렬화용)
 /// id를 _id로 rename하여 MongoDB의 _id 필드와 매핑
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct MongoRecord {
     #[serde(rename = "_id")]
+    #[serde_as(as = "DisplayFromStr")]
     pub id: Id,
     pub data: HashMap<String, serde_json::Value>,
+    #[serde(rename = "exp")]
+    #[serde_as(as = "FromTime03OffsetDateTime")]
     pub expiry_date: OffsetDateTime,
 }
 
@@ -84,55 +86,16 @@ impl Into<TowerRecord> for MongoRecord {
 
 /// MongoDB에 저장할 Record 구조체 (직렬화용 - 레퍼런스)
 /// id를 _id로 rename하여 MongoDB의 _id 필드와 매핑
-struct MongoRecordRef<'a> {
-    id: &'a Id,
-    data: &'a HashMap<String, serde_json::Value>,
-    expiry_date: &'a OffsetDateTime,
-}
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 
-impl<'a> From<&'a TowerRecord> for MongoRecordRef<'a> {
-    fn from(record: &'a TowerRecord) -> Self {
-        Self {
-            id: &record.id,
-            data: &record.data,
-            expiry_date: &record.expiry_date,
-        }
-    }
-}
-
-impl<'a> From<&'a mut TowerRecord> for MongoRecordRef<'a> {
-    fn from(record: &'a mut TowerRecord) -> Self {
-        Self {
-            id: &record.id,
-            data: &record.data,
-            expiry_date: &record.expiry_date,
-        }
-    }
-}
-
-impl<'a> Serialize for MongoRecordRef<'a> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("MongoRecord", 3)?;
-        state.serialize_field("_id", self.id)?;
-        state.serialize_field("data", self.data)?;
-        state.serialize_field("expiry_date", self.expiry_date)?;
-        state.end()
-    }
-}
-
-impl<'de, 'a> Deserialize<'de> for MongoRecordRef<'a> {
-    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Err(de::Error::custom(
-            "MongoRecordRef does not support deserialization. Use MongoRecord instead.",
-        ))
-    }
+struct RecordHelper {
+    #[serde(rename = "_id")]
+    #[serde_as(as = "DisplayFromStr")]
+    pub id: Id,
+    #[serde(rename = "exp")]
+    #[serde_as(as = "FromTime03OffsetDateTime")]
+    pub expiry_date: OffsetDateTime,
 }
 
 /// MongoDB를 사용하는 세션 저장소 구현
@@ -161,64 +124,48 @@ impl MongoSessionStore {
 #[async_trait::async_trait]
 impl SessionStore for MongoSessionStore {
     async fn create(&self, record: &mut TowerRecord) -> Result<(), SessionError> {
-        let result = async {
-            // TowerRecord 레퍼런스를 MongoRecordRef로 변환 후 Document로 직렬화
-            let mongo_record_ref: MongoRecordRef = record.into();
-
-            // let doc = mongodb::bson::serialize_to_bson(&mongo_record_ref)
-            //     .map_err(|e| SessionError::Encode(e.to_string()))?;
-
-            self.client
-                .get_collection_typed::<MongoRecordRef>(&self.collection_name)
-                .insert_one(mongo_record_ref)
-                .await
-                .map_err(|e| SessionError::Backend(e.to_string()))?;
-
-            Ok::<_, SessionError>(())
+        let mongo_record_for_write = RecordHelper {
+            id: record.id,
+            expiry_date: record.expiry_date,
+        };
+        let mut root = bson::ser::serialize_to_document(&mongo_record_for_write)
+            .map_err(|e| SessionError::Encode(e.to_string()))?;
+        if !record.data.is_empty() {
+            let data = bson::ser::serialize_to_document(&record.data)
+                .map_err(|e| SessionError::Encode(e.to_string()))?;
+            root.insert("data", data);
         }
-        .await;
 
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                error!("create session error: {}", e.to_string());
-                Err(e)
-            }
-        }
+        self.client
+            .get_collection(&self.collection_name)
+            .insert_one(root)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        Ok(())
     }
 
     async fn save(&self, record: &TowerRecord) -> Result<(), SessionError> {
-        let result = async {
-            // TowerRecord 레퍼런스를 MongoRecordRef로 변환 후 Document로 직렬화
-            let mongo_record_ref: MongoRecordRef = record.into();
+        let mongo_record_for_write = RecordHelper {
+            id: record.id,
+            expiry_date: record.expiry_date,
+        };
+        let mut root = bson::ser::serialize_to_document(&mongo_record_for_write)
+            .map_err(|e| SessionError::Encode(e.to_string()))?;
+        let data = bson::ser::serialize_to_document(&record.data)
+            .map_err(|e| SessionError::Encode(e.to_string()))?;
+        root.insert("data", data);
 
-            let mut bjson = mongodb::bson::serialize_to_bson(&mongo_record_ref)
-                .map_err(|e| SessionError::Encode(e.to_string()))?;
-            bjson
-                .as_document_mut()
-                .ok_or(SessionError::Encode("Failed to get document".to_string()))?
-                .remove("_id");
-
-            let filter = doc! { "_id": record.id.to_string() };
-            let update = doc! { "$set": bjson };
-
-            self.client
-                .get_collection_typed::<MongoRecord>(&self.collection_name)
-                .update_one(filter, update)
-                .await
-                .map_err(|e| SessionError::Backend(e.to_string()))?;
-
-            Ok::<_, SessionError>(())
-        }
-        .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                error!("save session error: {}", e.to_string());
-                Err(e)
-            }
-        }
+        let key = root
+            .remove("_id")
+            .ok_or(SessionError::Encode("Failed to get key".to_string()))?;
+        let filter = doc! { "_id": key };
+        let update = doc! { "$set": root };
+        self.client
+            .get_collection(&self.collection_name)
+            .update_one(filter, update)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        Ok(())
     }
 
     async fn load(&self, session_id: &Id) -> Result<Option<TowerRecord>, SessionError> {
