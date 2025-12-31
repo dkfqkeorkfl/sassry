@@ -1,9 +1,8 @@
 use axum::{
     extract::State,
-    http::{StatusCode, Uri},
+    http::{HeaderMap, StatusCode, Uri},
 };
 
-use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use serde_with::{serde_as, DurationSeconds};
 
@@ -19,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     compression::{
-        CompressionLayer, Predicate, predicate::{NotForContentType, SizeAbove}
+        predicate::{NotForContentType, SizeAbove},
+        CompressionLayer, Predicate,
     },
     cors::CorsLayer,
     limit::RequestBodyLimitLayer,
@@ -484,7 +484,7 @@ impl Server {
     }
 
     async fn redirect_http_to_https2(config: Arc<HttpsConfig>) -> anyhow::Result<()> {
-        fn make_https(host: String, uri: Uri, ports: Arc<HttpsConfig>) -> anyhow::Result<Uri> {
+        fn make_https(host: &str, uri: Uri, ports: Arc<HttpsConfig>) -> anyhow::Result<Uri> {
             let mut parts = uri.into_parts();
 
             parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
@@ -504,8 +504,16 @@ impl Server {
 
         let router = axum::Router::new()
             .fallback(
-                |Host(host): Host, uri: Uri, State(state): State<Arc<HttpsConfig>>| async move {
-                    match make_https(host, uri, state) {
+                |hearders: HeaderMap, uri: Uri, State(state): State<Arc<HttpsConfig>>| async move {
+                    let host = hearders
+                        .get(axum::http::header::HOST)
+                        .map(|h| h.to_str().ok())
+                        .flatten();
+                    if host.is_none() {
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+
+                    match make_https(host.unwrap(), uri, state) {
                         Ok(uri) => Ok(axum::response::Redirect::permanent(&uri.to_string())),
                         Err(error) => {
                             cassry::error!(
@@ -527,7 +535,7 @@ impl Server {
 
     /// MiddlewareConfig를 사용하여 서버를 생성하는 새로운 함수
     /// ServerConfig enum과 MiddlewareConfig를 사용하여 모든 미들웨어를 구성
-    pub async fn new2(
+    pub async fn new(
         server_config: ServerConfig,
         middleware_config: MiddlewareConfig,
         mut router: axum::Router,
@@ -616,75 +624,6 @@ impl Server {
         Ok(Server {
             server_config: server_config,
             middleware_config: middleware_config,
-        })
-    }
-
-    async fn redirect_http_to_https(ports: Arc<Param>) -> anyhow::Result<()> {
-        fn make_https(host: String, uri: Uri, ports: Arc<Param>) -> anyhow::Result<Uri> {
-            let mut parts = uri.into_parts();
-
-            parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
-
-            if parts.path_and_query.is_none() {
-                parts.path_and_query = Some("/".parse().unwrap());
-            }
-
-            let https_host =
-                host.replace(&ports.http_port.to_string(), &ports.https_port.to_string());
-            parts.authority = Some(https_host.parse()?);
-
-            Ok(Uri::from_parts(parts)?)
-        }
-
-        let router = axum::Router::new()
-            .fallback(
-                |Host(host): Host, uri: Uri, State(state): State<Arc<Param>>| async move {
-                    match make_https(host, uri, state) {
-                        Ok(uri) => Ok(axum::response::Redirect::permanent(&uri.to_string())),
-                        Err(error) => {
-                            cassry::error!(
-                                "failed to convert URI to HTTPS : {}",
-                                error.to_string()
-                            );
-                            Err(StatusCode::BAD_REQUEST)
-                        }
-                    }
-                },
-            )
-            .with_state(ports.clone());
-
-        let addr = SocketAddr::new(ports.addr.clone(), ports.http_port.clone());
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let ret = axum::serve(listener, router.into_make_service()).await?;
-        cassry::debug!("http is listening on {:?}", addr);
-        Ok(ret)
-    }
-
-    pub async fn new(param: Param, router: axum::Router) -> anyhow::Result<Self> {
-        let service = tower::ServiceBuilder::new() // 초당 10 요청
-            .timeout(std::time::Duration::from_secs(5))
-            .load_shed()
-            .service(router.into_make_service_with_connect_info::<SocketAddr>());
-
-        let config = Arc::new(param);
-        let addr = SocketAddr::new(config.addr.clone(), config.https_port.clone());
-        let cloned_addr = addr.clone();
-        let acceptor = RustlsConfig::from_pem_file(&config.cert, &config.key).await?;
-
-        tokio::spawn(Server::redirect_http_to_https(config.clone()));
-        tokio::spawn(async move {
-            if let Err(e) = axum_server::bind_rustls(cloned_addr, acceptor)
-                .serve(service)
-                .await
-            {
-                cassry::error!("occur error in server : {}", e.to_string());
-            }
-        });
-
-        cassry::info!("success that open webserver : addr({})", addr.to_string());
-        Ok(Server {
-            server_config: ServerConfig::Http(HttpConfig { socket_addr: addr }),
-            middleware_config: MiddlewareConfig::default(),
         })
     }
 }

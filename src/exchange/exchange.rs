@@ -254,7 +254,7 @@ impl Exchange {
 
     pub async fn new<ResAPI, Websocket>(
         option: ExchangeParam,
-        recorder: localdb::LocalDB,
+        recorder: Arc<localdb::LocalDB>,
         builder: Option<ClientBuilder>,
     ) -> anyhow::Result<Arc<Self>>
     where

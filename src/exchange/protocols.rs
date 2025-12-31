@@ -1916,12 +1916,12 @@ pub struct ExchangeContext {
     pub param: ExchangeParam,
     pub storage: ExchangeStorage,
     pub requester: reqwest::Client,
-    pub recorder: LocalDB,
+    pub recorder: Arc<LocalDB>,
 }
 pub type ExchangeContextPtr = Arc<ExchangeContext>;
 
 impl ExchangeContext {
-    pub fn new(param: ExchangeParam, recorder: LocalDB, requester: reqwest::Client) -> Self {
+    pub fn new(param: ExchangeParam, recorder: Arc<LocalDB>, requester: reqwest::Client) -> Self {
         let storage = ExchangeStorage {
             markets: RwLock::new(Default::default()).into(),
             orderbook: RwLock::new(Default::default()).into(),
@@ -1953,7 +1953,7 @@ impl ExchangeContext {
     ) -> anyhow::Result<Option<Arc<(OrderPtr, MarketPtr)>>> {
         if let Some((market_id, order)) = self
             .recorder
-            .get_json::<(MarketID, OrderPtr)>(oid.to_string())
+            .get_json::<(MarketID, OrderPtr)>(&oid)
             .await?
         {
             let market = self
@@ -1974,7 +1974,7 @@ impl ExchangeContext {
     pub async fn save_db_order(&self, order: OrderPtr, market: MarketPtr) -> anyhow::Result<()> {
         let oid = order.oid.clone();
         self.recorder
-            .put_json(oid, &(market.market_id.clone(), order))
+            .put_json(&oid, &(market.market_id.clone(), order))
             .await?;
         Ok(())
     }

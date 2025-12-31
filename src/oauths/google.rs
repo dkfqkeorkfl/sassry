@@ -55,7 +55,7 @@ impl super::OAuthProvider for GoogleOAuth {
 impl GoogleOAuth {
     pub fn new(client_id: &str, client_secret: &str, redirect_url: &str) -> anyhow::Result<Self> {
         let request = oauth2::reqwest::ClientBuilder::new()
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(oauth2::reqwest::redirect::Policy::none())
             .build()?;
 
         let auth_url = AuthUrl::new("https://accounts.google.com/o/oauth2/auth".into())?;
@@ -106,14 +106,15 @@ impl GoogleOAuth {
             .request_async(&self.request)
             .await?;
 
-        let user_info = self
+        let txt = self
             .request
             .get("https://www.googleapis.com/oauth2/v2/userinfo")
             .bearer_auth(token_result.access_token().secret())
             .send()
             .await?
-            .json::<serde_json::Value>()
+            .text()
             .await?;
+        let user_info = serde_json::from_str::<serde_json::Value>(&txt)?;
 
         // token_result.set_expires_in(None).;
         let profile = GoogleProfile {
