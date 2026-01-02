@@ -46,13 +46,11 @@ pub struct GoogleOAuth {
     request: oauth2::reqwest::Client,
 }
 
-impl super::OAuthProvider for GoogleOAuth {
-    fn get_provider(&self) -> &'static str {
+impl GoogleOAuth {
+    pub fn get_provider(&self) -> &'static str {
         "google"
     }
-}
 
-impl GoogleOAuth {
     pub fn new(client_id: &str, client_secret: &str, redirect_url: &str) -> anyhow::Result<Self> {
         let request = oauth2::reqwest::ClientBuilder::new()
             .redirect(oauth2::reqwest::redirect::Policy::none())
