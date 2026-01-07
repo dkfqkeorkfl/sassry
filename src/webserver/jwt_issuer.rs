@@ -67,7 +67,6 @@ impl DerivedFrom for AccessPayload {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserRefreshClaims {
     /// 토큰 고유 ID
-    #[serde(rename = "_id")]
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
 
