@@ -15,7 +15,6 @@ use tower_sessions::{
     SessionStore,
 };
 
-#[derive(Clone)]
 pub struct Client {
     client: MongoClient,
     database: Database,
