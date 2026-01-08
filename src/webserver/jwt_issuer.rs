@@ -14,9 +14,31 @@ use std::{net::IpAddr, sync::Arc, u64};
 use tower_cookies::Cookies;
 use uuid::Uuid;
 use bson::serde_helpers::datetime::FromChrono04DateTime;
+use derive_more::Display;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display)]
+#[display("{}", 0)]
+pub struct UserKey(pub i64);
+impl UserKey {
+    pub fn value(&self) -> i64 {
+        self.0
+    }
+}
+
+impl From<i64> for UserKey {
+    fn from(uid: i64) -> Self {
+        Self(uid)
+    }
+}
+
+impl Into<i64> for UserKey {
+    fn into(self) -> i64 {
+        self.0
+    }
+}
 
 pub struct LoginParams {
-    pub uid: i64,
+    pub uid: UserKey,
     pub password: String,
     pub role: i64,
 
@@ -33,7 +55,7 @@ pub trait DerivedFrom {
 pub struct UserPayload {
     pub derived_from: [u8; 16],
 
-    pub uid: i64,
+    pub uid: UserKey,
     pub role: i64,
     pub nick: String,
 
@@ -53,7 +75,7 @@ impl DerivedFrom for UserPayload {
 pub struct AccessPayload {
     pub derived_from: [u8; 16],
 
-    pub uid: i64,
+    pub uid: UserKey,
     pub payload_created_at: i64,
 }
 
@@ -78,7 +100,7 @@ pub struct UserRefreshClaims {
     pub iss: String,
 
     /// 사용자 ID
-    pub sub: i64,
+    pub sub: UserKey,
     /// 발급 시간
     #[serde_as(as = "FromChrono04DateTime")]
     pub iat: DateTime<Utc>,
@@ -404,7 +426,7 @@ impl TokenIssuerImpl {
             jti: refresh_jti,
             exp: now + self.refresh_ttl,
             iss: self.name.clone(),
-            sub: params.uid,
+            sub: params.uid.clone(),
             iat: now,
             env: params.login_ip,
             role: params.role,
@@ -414,7 +436,7 @@ impl TokenIssuerImpl {
 
         let access_payload = AccessPayload {
             derived_from: refresh_jti.into_bytes(),
-            uid: params.uid,
+            uid: params.uid.clone(),
             payload_created_at: now.timestamp_millis(),
         };
 
@@ -427,7 +449,7 @@ impl TokenIssuerImpl {
 
         let user_payload = UserPayload {
             derived_from: access_jti.into_bytes(),
-            uid: params.uid,
+            uid: params.uid.clone(),
             role: params.role,
             nick: params.nick,
             login_ip: params.login_ip,
@@ -520,7 +542,7 @@ impl TokenIssuerImpl {
 
         let access_payload = AccessPayload {
             derived_from: refresh_jti.into_bytes(),
-            uid: user_payload.uid,
+            uid: user_payload.uid.clone(),
             payload_created_at: now.timestamp_millis(),
         };
         let access_jti = Uuid::new_v4();
