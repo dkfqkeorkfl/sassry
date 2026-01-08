@@ -16,9 +16,10 @@ use uuid::Uuid;
 use bson::serde_helpers::datetime::FromChrono04DateTime;
 use derive_more::Display;
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display)]
 #[display("{}", 0)]
-pub struct UserKey(pub i64);
+pub struct UserKey(#[serde_as(as = "DisplayFromStr")] pub i64);
 impl UserKey {
     pub fn value(&self) -> i64 {
         self.0
