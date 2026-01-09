@@ -38,6 +38,12 @@ impl Into<i64> for UserKey {
     }
 }
 
+impl Into<String> for UserKey {
+    fn into(self) -> String {
+        self.0.to_string()
+    }
+}
+
 pub struct LoginParams {
     pub uid: UserKey,
     pub password: String,
