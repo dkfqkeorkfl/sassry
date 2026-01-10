@@ -21,8 +21,8 @@ use derive_more::Display;
 #[display("{}", 0)]
 pub struct UserKey(#[serde_as(as = "DisplayFromStr")] pub i64);
 impl UserKey {
-    pub fn value(&self) -> i64 {
-        self.0
+    pub fn value(&self) -> &i64 {
+        &self.0
     }
 }
 
