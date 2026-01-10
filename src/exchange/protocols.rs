@@ -662,7 +662,7 @@ where
     Value: UpdatedTrait + PacketTimeTrait + Serialize, //  + for<'a> Deserialize<'a>,
 {
     fn default() -> Self {
-        let initial_time = util::get_epoch_first();
+        let initial_time = util::datetime_epoch_first();
         DataSet {
             utype: UpdateType::Snapshot,
             ptime: initial_time.into(),
@@ -1357,7 +1357,7 @@ pub struct PublicTradeSet {
 
 impl Default for PublicTradeSet {
     fn default() -> Self {
-        let initial_time = util::get_epoch_first();
+        let initial_time = util::datetime_epoch_first();
         PublicTradeSet {
             ptime: initial_time.into(),
             datas: VecDeque::<PublicTradePtr>::default(),

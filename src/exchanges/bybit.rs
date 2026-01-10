@@ -161,7 +161,7 @@ impl exchange::RestApiTrait for RestAPI {
         .await;
 
         let mut ret = OrderResult::new(
-            util::get_epoch_first().into(),
+            util::datetime_epoch_first().into(),
             MarketVal::Pointer(market.clone()),
         );
         bodies.into_iter().enumerate().for_each(|(i, result)| {
@@ -221,7 +221,7 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut ret = OrderResult::new(util::get_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
         for (oid, result) in bodies {
             let matched = result.and_then(|(v, t)| {
                 let order = params
@@ -300,7 +300,7 @@ impl exchange::RestApiTrait for RestAPI {
         .await;
 
         let mut ret = OrderResult::new(
-            util::get_epoch_first().into(),
+            util::datetime_epoch_first().into(),
             MarketVal::Pointer(market.clone()),
         );
         for (i, result) in bodies.into_iter().enumerate() {
@@ -364,7 +364,7 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut ret = OrderResult::new(util::get_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
         for (oid, result) in bodies {
             let matched = result.and_then(|(v, t)| {
                 let order = params

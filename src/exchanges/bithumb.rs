@@ -304,7 +304,7 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut ret = OrderResult::new(util::get_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
         for (oid, result) in bodies {
             match result {
                 Ok((_root, ptime)) => {
@@ -356,7 +356,7 @@ impl exchange::RestApiTrait for RestAPI {
         .await;
 
         let mut ret = OrderResult::new(
-            util::get_epoch_first().into(),
+            util::datetime_epoch_first().into(),
             MarketVal::Pointer(market.clone()),
         );
 
@@ -392,7 +392,7 @@ impl exchange::RestApiTrait for RestAPI {
                     if let Some(caps) = re.captures(&text) {
                         cassry::error!("[bithumb] Forced cancellation : {}", text);
                         let mut os = OrderSet::new(
-                            util::get_epoch_first().into(),
+                            util::datetime_epoch_first().into(),
                             MarketVal::Pointer(market.clone()),
                         );
 
@@ -433,7 +433,7 @@ impl exchange::RestApiTrait for RestAPI {
         .await;
         // 빗썸은 개별 주문 조회를 지원하지 않으므로 주문 리스트를 조회
 
-        let mut ret = OrderResult::new(util::get_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
         for (oid, result) in bodies {
             match result {
                 Ok((value, ptime)) => {
