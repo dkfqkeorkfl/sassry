@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display)]
-#[display("{}", 0)]
+#[display("{}", _0)]
 pub struct UserKey(#[serde_as(as = "DisplayFromStr")] pub i64);
 impl UserKey {
     pub fn value(&self) -> &i64 {
