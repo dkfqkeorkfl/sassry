@@ -5,7 +5,7 @@ use cassry::{
     base64::Engine,
     chrono::{DateTime, Local, Utc},
     moka::future::Cache,
-    secrecy::{ExposeSecret, SecretString},
+    secrecy::{ExposeSecret, SecretSlice, SecretString},
     tokio::sync::RwLock,
     *,
 };
@@ -228,10 +228,16 @@ pub struct ClaimsPair {
     pub csrf_claims: UserCsrfClaims,
 }
 
+
+struct KyInfo {
+    pub created_at: DateTime<Local>,
+    pub secret: SecretSlice<u8>,
+}
+
 pub struct JwtIssuer {
     secret: SecretString,
-    keys: Cache<DateTime<Local>, secrecy::SecretSlice<u8>>,
-    main: RwLock<DateTime<Local>>,
+    keys: Cache<String, Arc<KyInfo>>,
+    main: RwLock<String>,
 }
 
 impl JwtIssuer {
@@ -239,25 +245,35 @@ impl JwtIssuer {
         self.secret.clone()
     }
 
-    pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
+    pub async fn insert_key(&self, created_at: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
         let arr = self.secret.expose_secret().as_bytes().try_into()?;
         let mut hasher = blake3::Hasher::new_keyed(&arr);
         hasher.update(origin.as_bytes());
         let hash = hasher.finalize();
-
         let secret = secrecy::SecretSlice::new(hash.as_bytes().to_vec().into());
-        self.keys.insert(key, secret).await;
+
+        let key = {
+            let bytes = postcard::to_stdvec(&created_at.timestamp_millis())?;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
+        };
+        
+        self.keys.insert(key.clone(), Arc::new(KyInfo { created_at, secret })).await;
         let mut locked = self.main.write().await;
-        if *locked < key {
+        if let Some(prev) = self.keys.get(locked.as_str()).await {
+            if prev.created_at < created_at {
+                *locked = key;
+            }
+        }
+        else {
             *locked = key;
         }
 
         Ok(())
     }
 
-    pub async fn get_key(&self) -> Option<secrecy::SecretSlice<u8>> {
+    pub async fn get_key(&self) -> Option<Arc<KyInfo>> {
         let locked = self.main.read().await;
-        self.keys.get(&*locked).await
+        self.keys.get(locked.as_str()).await
     }
 
     pub fn generate_jwt_with_nonce<T: Serialize>(
@@ -398,7 +414,7 @@ impl TokenIssuerImpl {
                         refresh_ttl.num_seconds() as u64
                     ))
                     .build(),
-                main: RwLock::new(Local::now()),
+                main: RwLock::new(String::new()),
             },
             csrf_isser: JwtIssuer {
                 secret: csrf_secret,
@@ -407,7 +423,7 @@ impl TokenIssuerImpl {
                         refresh_ttl.num_seconds() as u64
                     ))
                     .build(),
-                main: RwLock::new(Local::now()),
+                main: RwLock::new(String::new()),
             },
             csrf_dump_key,
             access_ttl,
