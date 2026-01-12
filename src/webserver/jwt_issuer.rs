@@ -636,20 +636,20 @@ impl TokenIssuerImpl {
 
 #[derive(Clone)]
 pub struct TokenIssuer {
-    isser: RwArc<TokenIssuerImpl>,
+    isser: Arc<TokenIssuerImpl>,
 }
 
 impl TokenIssuer {
     pub async fn get_name(&self) -> String {
-        self.isser.read().await.get_name().clone()
+        self.isser.get_name().clone()
     }
 
     pub async fn get_access_ttl(&self) -> chrono::Duration {
-        self.isser.read().await.get_access_ttl().clone()
+        self.isser.get_access_ttl().clone()
     }
 
     pub async fn get_refresh_ttl(&self) -> chrono::Duration {
-        self.isser.read().await.get_refresh_ttl().clone()
+        self.isser.get_refresh_ttl().clone()
     }
 
     pub const fn get_cookie_name() -> &'static str {
@@ -661,16 +661,15 @@ impl TokenIssuer {
     }
 
     pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
-        println!("insert_key: {} {}", key, origin);
-        self.isser.read().await.insert_key(key, origin).await
+        self.isser.insert_key(key, origin).await
     }
 
     pub async fn insert_block(&self, jti: &Uuid) {
-        self.isser.read().await.insert_block(jti).await;
+        self.isser.insert_block(jti).await;
     }
 
     pub async fn contains_block(&self, jti: &Uuid) -> bool {
-        self.isser.read().await.contains_block(jti)
+        self.isser.contains_block(jti)
     }
 
     /// 새로운 JwtManager 인스턴스 생성
@@ -699,7 +698,7 @@ impl TokenIssuer {
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
     pub async fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
-        self.isser.read().await.login(params).await
+        self.isser.login(params).await
     }
 
     pub async fn refresh_access_token(
@@ -708,7 +707,7 @@ impl TokenIssuer {
         prev_refresh_clams: UserRefreshClaims,
         user_payload: UserPayload,
     ) -> anyhow::Result<IssuedClaims> {
-        self.isser.read().await.refresh_access_token(
+        self.isser.refresh_access_token(
             &prev_access_claims,
             prev_refresh_clams,
             user_payload,
@@ -722,8 +721,6 @@ impl TokenIssuer {
         validation: Option<Validation>,
     ) -> anyhow::Result<UserCsrfClaims> {
         self.isser
-            .read()
-            .await
             .verify_jwt_csrf(access_claims, csrf_token, validation).await
     }
 
@@ -737,8 +734,6 @@ impl TokenIssuer {
             .ok_or(HttpError::MissingJwtToken)?;
         let access_claims = self
             .isser
-            .read()
-            .await
             .verify_jwt_access(access_token.value(), validation).await
             .map_err(|e| HttpError::InvalidJwt(e))?;
         Ok(access_claims)
@@ -755,8 +750,6 @@ impl TokenIssuer {
             .ok_or(HttpError::MissingJwtToken)?;
 
         self.isser
-            .read()
-            .await
             .verify_jwt_pair(access_token.value(), csrf_token, validation).await
             .map_err(|e| HttpError::InvalidJwt(e))
     }
@@ -788,8 +781,6 @@ impl TokenIssuer {
         csrf_dump: &str,
     ) -> anyhow::Result<String> {
         self.isser
-            .read()
-            .await
             .decrypt_csrf_dump(access_claims, addr, csrf_dump)
     }
 }
