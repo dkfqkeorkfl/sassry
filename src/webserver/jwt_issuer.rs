@@ -1,20 +1,21 @@
 use super::error::HttpError;
 use axum::{extract::FromRequestParts, http::HeaderMap};
+use bson::serde_helpers::datetime::FromChrono04DateTime;
 use cassry::{
     base64::Engine,
-    chrono::{DateTime, Utc},
+    chrono::{DateTime, Local, Utc},
     moka::future::Cache,
     secrecy::{ExposeSecret, SecretString},
+    tokio::sync::RwLock,
     *,
 };
+use derive_more::Display;
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
 use std::{net::IpAddr, sync::Arc, u64};
 use tower_cookies::Cookies;
 use uuid::Uuid;
-use bson::serde_helpers::datetime::FromChrono04DateTime;
-use derive_more::Display;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display)]
@@ -229,11 +230,34 @@ pub struct ClaimsPair {
 
 pub struct JwtIssuer {
     secret: SecretString,
+    keys: Cache<DateTime<Local>, secrecy::SecretSlice<u8>>,
+    main: RwLock<DateTime<Local>>,
 }
 
 impl JwtIssuer {
     pub fn get_secret(&self) -> SecretString {
         self.secret.clone()
+    }
+
+    pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
+        let arr = self.secret.expose_secret().as_bytes().try_into()?;
+        let mut hasher = blake3::Hasher::new_keyed(&arr);
+        hasher.update(origin.as_bytes());
+        let hash = hasher.finalize();
+
+        let secret = secrecy::SecretSlice::new(hash.as_bytes().to_vec().into());
+        self.keys.insert(key, secret).await;
+        let mut locked = self.main.write().await;
+        if *locked < key {
+            *locked = key;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_key(&self) -> Option<secrecy::SecretSlice<u8>> {
+        let locked = self.main.read().await;
+        self.keys.get(&*locked).await
     }
 
     pub fn generate_jwt_with_nonce<T: Serialize>(
@@ -310,6 +334,11 @@ pub struct TokenIssuerImpl {
 }
 
 impl TokenIssuerImpl {
+    pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
+        self.csrf_isser.insert_key(key, origin).await?;
+        self.access_isser.insert_key(key, origin).await
+    }
+
     pub fn get_name(&self) -> &String {
         &self.name
     }
@@ -364,9 +393,21 @@ impl TokenIssuerImpl {
             name,
             access_isser: JwtIssuer {
                 secret: access_secret,
+                keys: moka::future::CacheBuilder::new(u64::MAX)
+                    .time_to_live(std::time::Duration::from_secs(
+                        refresh_ttl.num_seconds() as u64
+                    ))
+                    .build(),
+                main: RwLock::new(Local::now()),
             },
             csrf_isser: JwtIssuer {
                 secret: csrf_secret,
+                keys: moka::future::CacheBuilder::new(u64::MAX)
+                    .time_to_live(std::time::Duration::from_secs(
+                        refresh_ttl.num_seconds() as u64
+                    ))
+                    .build(),
+                main: RwLock::new(Local::now()),
             },
             csrf_dump_key,
             access_ttl,
@@ -482,8 +523,8 @@ impl TokenIssuerImpl {
         let nonce = self.generate_dump_nonce(access_claims, addr)?;
         let encrypted = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(csrf_dump)?;
         let decrypted = util::decrypt_str_by_aes_gcm_128(
-            access_claims.jti.as_bytes(),
-            nonce.as_slice(),
+            access_claims.jti.as_bytes().try_into()?,
+            nonce.as_slice().try_into()?,
             encrypted,
         )?;
 
@@ -506,8 +547,8 @@ impl TokenIssuerImpl {
             .generate_jwt_with_nonce(&csrf_claims, access_claims.jti.as_bytes())?;
         let nonce = self.generate_dump_nonce(access_claims, &csrf_claims.payload.login_ip)?;
         let encrypted = util::encrypt_str_by_aes_gcm_128(
-            access_claims.jti.as_bytes(),
-            nonce.as_slice(),
+            access_claims.jti.as_bytes().try_into()?,
+            nonce.as_slice().try_into()?,
             &csrf_token,
         )?;
         Ok((
@@ -581,9 +622,6 @@ impl TokenIssuer {
         self.isser.read().await.get_name().clone()
     }
 
-    pub async fn update(&mut self, access_ttl: chrono::Duration, refresh_ttl: chrono::Duration) {
-        self.isser.write().await.update(access_ttl, refresh_ttl);
-    }
     pub async fn get_access_ttl(&self) -> chrono::Duration {
         self.isser.read().await.get_access_ttl().clone()
     }
@@ -598,6 +636,11 @@ impl TokenIssuer {
 
     pub const fn get_session_sub_name() -> &'static str {
         "sub"
+    }
+
+    pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
+        println!("insert_key: {} {}", key, origin);
+        self.isser.write().await.insert_key(key, origin).await
     }
 
     pub async fn insert_block(&self, jti: &Uuid) {
