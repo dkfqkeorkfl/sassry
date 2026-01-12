@@ -229,7 +229,7 @@ pub struct ClaimsPair {
 }
 
 
-struct KyInfo {
+pub struct KyInfo {
     pub created_at: DateTime<Local>,
     pub secret: SecretSlice<u8>,
 }
@@ -271,37 +271,42 @@ impl JwtIssuer {
         Ok(())
     }
 
-    pub async fn get_key(&self) -> Option<Arc<KyInfo>> {
+    pub async fn get_key(&self) -> Option<(String, Arc<KyInfo>)> {
         let locked = self.main.read().await;
-        self.keys.get(locked.as_str()).await
+        self.keys.get(locked.as_str()).await.map(|x| (locked.clone(), x))
     }
 
-    pub fn generate_jwt_with_nonce<T: Serialize>(
+    pub async fn generate_jwt_with_nonce<T: Serialize>(
         &self,
         claims: &T,
         nonce: &[u8],
     ) -> anyhow::Result<String> {
-        let arr = self.secret.expose_secret().as_bytes().try_into()?;
-        let mut hasher = blake3::Hasher::new_keyed(&arr);
+        let (key, info) = self.get_key().await.ok_or(anyhow::anyhow!("Key not found"))?;
+        let mut header = jsonwebtoken::Header::default();
+        header.kid = Some(key);
+
+        let mut hasher = blake3::Hasher::new_keyed(&info.secret.expose_secret().try_into()?);
         hasher.update(nonce);
         let hash = hasher.finalize();
 
         jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
+            &header,
             claims,
             &EncodingKey::from_secret(hash.as_bytes()),
         )
         .map_err(anyhow::Error::from)
     }
 
-    pub fn verify_with_nonce<T: DeserializeOwned>(
+    pub async fn verify_with_nonce<T: DeserializeOwned>(
         &self,
         token: &str,
         nonce: &[u8],
         validation: Option<Validation>,
     ) -> anyhow::Result<T> {
-        let arr = self.secret.expose_secret().as_bytes().try_into()?;
-        let mut hasher = blake3::Hasher::new_keyed(&arr);
+        let kid = jsonwebtoken::decode_header(token)?.kid.ok_or(anyhow::anyhow!("Key not found"))?;
+        let info = self.keys.get(&kid).await.ok_or(anyhow::anyhow!("Key not found"))?;
+
+        let mut hasher = blake3::Hasher::new_keyed(&info.secret.expose_secret().try_into()?);
         hasher.update(nonce);
         let hash = hasher.finalize();
 
@@ -314,23 +319,29 @@ impl JwtIssuer {
         .map_err(anyhow::Error::from)
     }
 
-    pub fn generate_jwt<T: Serialize>(&self, claims: &T) -> anyhow::Result<String> {
+    pub async fn generate_jwt<T: Serialize>(&self, claims: &T) -> anyhow::Result<String> {
+        let (key, info) = self.get_key().await.ok_or(anyhow::anyhow!("Key not found"))?;
+        let mut header = jsonwebtoken::Header::default();
+        header.kid = Some(key);
         jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
+            &header,
             claims,
-            &EncodingKey::from_secret(self.secret.expose_secret().as_bytes()),
+            &EncodingKey::from_secret(info.secret.expose_secret()),
         )
         .map_err(anyhow::Error::from)
     }
 
-    pub fn verify<T: DeserializeOwned>(
+    pub async fn verify<T: DeserializeOwned>(
         &self,
         token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<T> {
+        let kid = jsonwebtoken::decode_header(token)?.kid.ok_or(anyhow::anyhow!("Key not found"))?;
+        let info = self.keys.get(&kid).await.ok_or(anyhow::anyhow!("Key not found"))?;
+
         jsonwebtoken::decode::<T>(
             token,
-            &DecodingKey::from_secret(self.secret.expose_secret().as_bytes()),
+            &DecodingKey::from_secret(info.secret.expose_secret()),
             &validation.unwrap_or_default(),
         )
         .map(|token_data| token_data.claims)
@@ -357,11 +368,6 @@ impl TokenIssuerImpl {
 
     pub fn get_name(&self) -> &String {
         &self.name
-    }
-
-    pub fn update(&mut self, access_ttl: chrono::Duration, refresh_ttl: chrono::Duration) {
-        self.access_ttl = access_ttl;
-        self.refresh_ttl = refresh_ttl;
     }
 
     pub fn get_access_ttl(&self) -> &chrono::Duration {
@@ -436,13 +442,13 @@ impl TokenIssuerImpl {
         }
     }
 
-    pub fn verify_jwt_access(
+    pub async fn verify_jwt_access(
         &self,
         access_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<UserAccessClaims> {
         self.access_isser
-            .verify::<UserAccessClaims>(access_token, validation)
+            .verify::<UserAccessClaims>(access_token, validation).await
             .and_then(|claims| {
                 if self.contains_block(&claims.payload.get_derived_from()) {
                     return Err(anyhow::anyhow!("Blocked refresh token"));
@@ -451,7 +457,7 @@ impl TokenIssuerImpl {
             })
     }
 
-    pub fn verify_jwt_csrf(
+    pub async fn verify_jwt_csrf(
         &self,
         access_claims: &UserAccessClaims,
         csrf_token: &str,
@@ -461,18 +467,18 @@ impl TokenIssuerImpl {
             csrf_token,
             access_claims.jti.as_bytes(),
             validation,
-        )
+        ).await
     }
 
     /// JWT 토큰 검증 (유효성, 만료 등)
-    pub fn verify_jwt_pair(
+    pub async fn verify_jwt_pair(
         &self,
         access_token: &str,
         csrf_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<ClaimsPair> {
-        let access_claims = self.verify_jwt_access(access_token, validation.clone())?;
-        let csrf_claims = self.verify_jwt_csrf(&access_claims, csrf_token, validation)?;
+        let access_claims = self.verify_jwt_access(access_token, validation.clone()).await?;
+        let csrf_claims = self.verify_jwt_csrf(&access_claims, csrf_token, validation).await?;
         if self.contains_block(&access_claims.jti) {
             return Err(anyhow::anyhow!("Invalid access token"));
         }
@@ -483,7 +489,7 @@ impl TokenIssuerImpl {
     }
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
-    pub fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
+    pub async fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
         let now = Utc::now();
         let refresh_jti = Uuid::new_v4();
         let refresh_claims = UserRefreshClaims {
@@ -521,10 +527,10 @@ impl TokenIssuerImpl {
             payload_created_at: now.timestamp_millis(),
         };
 
-        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload)?;
+        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload).await?;
         Ok(IssuedClaims {
             refresh_claims,
-            access_token: self.access_isser.generate_jwt(&access_claims)?,
+            access_token: self.access_isser.generate_jwt(&access_claims).await?,
             csrf_token,
             csrf_dump,
         })
@@ -547,7 +553,7 @@ impl TokenIssuerImpl {
         Ok(decrypted.expose_secret().to_string())
     }
 
-    pub fn generate_csrf_token(
+    pub async fn generate_csrf_token(
         &self,
         access_claims: &UserAccessClaims,
         user_payload: UserPayload,
@@ -560,7 +566,7 @@ impl TokenIssuerImpl {
 
         let csrf_token = self
             .csrf_isser
-            .generate_jwt_with_nonce(&csrf_claims, access_claims.jti.as_bytes())?;
+            .generate_jwt_with_nonce(&csrf_claims, access_claims.jti.as_bytes()).await?;
         let nonce = self.generate_dump_nonce(access_claims, &csrf_claims.payload.login_ip)?;
         let encrypted = util::encrypt_str_by_aes_gcm_128(
             access_claims.jti.as_bytes().try_into()?,
@@ -573,7 +579,7 @@ impl TokenIssuerImpl {
         ))
     }
 
-    pub fn refresh_access_token(
+    pub async fn refresh_access_token(
         &self,
         prev_access_claims: &UserAccessClaims,
         prev_refresh_clams: UserRefreshClaims,
@@ -618,10 +624,10 @@ impl TokenIssuerImpl {
 
         user_payload.derived_from = access_jti.into_bytes();
         user_payload.payload_created_at = now.timestamp_millis();
-        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload)?;
+        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload).await?;
         Ok(IssuedClaims {
             refresh_claims,
-            access_token: self.access_isser.generate_jwt(&access_claims)?,
+            access_token: self.access_isser.generate_jwt(&access_claims).await?,
             csrf_token,
             csrf_dump,
         })
@@ -656,11 +662,11 @@ impl TokenIssuer {
 
     pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
         println!("insert_key: {} {}", key, origin);
-        self.isser.write().await.insert_key(key, origin).await
+        self.isser.read().await.insert_key(key, origin).await
     }
 
     pub async fn insert_block(&self, jti: &Uuid) {
-        self.isser.write().await.insert_block(jti).await;
+        self.isser.read().await.insert_block(jti).await;
     }
 
     pub async fn contains_block(&self, jti: &Uuid) -> bool {
@@ -693,7 +699,7 @@ impl TokenIssuer {
 
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
     pub async fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
-        self.isser.read().await.login(params)
+        self.isser.read().await.login(params).await
     }
 
     pub async fn refresh_access_token(
@@ -706,7 +712,7 @@ impl TokenIssuer {
             &prev_access_claims,
             prev_refresh_clams,
             user_payload,
-        )
+        ).await
     }
 
     pub async fn verify_jwt_csrf(
@@ -718,7 +724,7 @@ impl TokenIssuer {
         self.isser
             .read()
             .await
-            .verify_jwt_csrf(access_claims, csrf_token, validation)
+            .verify_jwt_csrf(access_claims, csrf_token, validation).await
     }
 
     pub async fn extract_access_claims_from(
@@ -733,7 +739,7 @@ impl TokenIssuer {
             .isser
             .read()
             .await
-            .verify_jwt_access(access_token.value(), validation)
+            .verify_jwt_access(access_token.value(), validation).await
             .map_err(|e| HttpError::InvalidJwt(e))?;
         Ok(access_claims)
     }
@@ -751,7 +757,7 @@ impl TokenIssuer {
         self.isser
             .read()
             .await
-            .verify_jwt_pair(access_token.value(), csrf_token, validation)
+            .verify_jwt_pair(access_token.value(), csrf_token, validation).await
             .map_err(|e| HttpError::InvalidJwt(e))
     }
 
