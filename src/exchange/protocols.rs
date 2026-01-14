@@ -22,6 +22,7 @@ use serde::{
 use serde_json::json;
 use serde_with::{serde_as, DurationSecondsWithFrac};
 use tokio::sync::RwLock;
+use derive_more::{Constructor, Deref, Display, From, Into};
 
 fn serialize_error_map<S>(
     errors: &HashMap<String, anyhow::Error>,
@@ -1321,7 +1322,7 @@ impl OrderBook {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PublicTrade {
     pub ptime: PacketTime,
     pub updated: chrono::DateTime<Utc>,
@@ -1822,10 +1823,28 @@ pub struct RestAPIParam {
     pub proxy: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq, Display, From, Into, Constructor, Deref)]
+pub struct ExchangeName(String);
+
+impl From<&str> for ExchangeName {
+    fn from(s: &str) -> Self {
+        ExchangeName(s.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq, Display, From, Into, Constructor, Deref)]
+pub struct ExchangeTag(String);
+
+impl From<&str> for ExchangeTag {
+    fn from(s: &str) -> Self {
+        ExchangeTag(s.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ExchangeKey {
-    pub tag: String,
-    pub exchange: String,
+    pub tag: ExchangeTag,
+    pub exchange: ExchangeName,
     pub is_testnet: bool,
 
     pub email: SecretString,
@@ -1859,8 +1878,8 @@ impl TryFrom<HashMap<String, SecretString>> for ExchangeKey {
             .remove("passphrase")
             .ok_or(anyhowln!("missing key: passphrase"))?;
         Ok(Self {
-            tag: tag.expose_secret().to_string(),
-            exchange: exchange.expose_secret().to_string(),
+            tag: tag.expose_secret().into(),
+            exchange: exchange.expose_secret().into(),
             is_testnet: is_testnet.expose_secret().to_lowercase().parse::<bool>()?,
             email,
             key,

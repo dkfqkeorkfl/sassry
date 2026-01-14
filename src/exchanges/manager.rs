@@ -7,16 +7,16 @@ use cassry::*;
 use super::super::exchange::*;
 use super::super::webserver::websocket::*;
 
-struct Inner {
-    tags: Vec<String>,
-    keys: HashMap<String, Arc<ExchangeKey>>,
-    instatnts: HashMap<String, Weak<Exchange>>,
+pub struct Manager {
+    tags: Vec<ExchangeTag>,
+    keys: HashMap<ExchangeTag, Arc<ExchangeKey>>,
+    instatnts: RwLock<HashMap<ExchangeTag, Weak<Exchange>>>,
     db: Arc<LocalDB>,
 }
 
-impl Inner {
-    pub fn new(keys: HashMap<String, Arc<ExchangeKey>>, db: Arc<LocalDB>) -> Self {
-        Inner {
+impl Manager {
+    pub fn new(keys: HashMap<ExchangeTag, Arc<ExchangeKey>>, db: Arc<LocalDB>) -> Self {
+        Self {
             tags: keys.keys().cloned().collect::<Vec<_>>(),
             keys: keys,
             instatnts: Default::default(),
@@ -24,9 +24,13 @@ impl Inner {
         }
     }
 
+    pub fn get_tags(&self) -> Vec<ExchangeTag> {
+        self.tags.clone()
+    }
+
     pub async fn instant(
-        &mut self,
-        tag: &str,
+        &self,
+        tag: &ExchangeTag,
         config: ExchangeConfig,
     ) -> anyhow::Result<ExchangeArc> {
         // let config = ExchangeConfig {
@@ -39,7 +43,7 @@ impl Inner {
         //     opt_max_trades_chche: 2000,
         // };
 
-        if let Some(exchange) = self.instatnts.get(tag).and_then(|weak| weak.upgrade()) {
+        if let Some(exchange) = self.instatnts.read().await.get(tag).and_then(|weak| weak.upgrade()) {
             cassry::info!("Gets an exchange({}) that is already loaded.", tag);
             return Ok(exchange);
         }
@@ -103,35 +107,7 @@ impl Inner {
         }?;
 
         cassry::info!("Exchange({}) loaded successfully", tag);
-        self.instatnts.insert(key.tag.clone(), Arc::downgrade(&exchange));
+        self.instatnts.write().await.insert(key.tag.clone(), Arc::downgrade(&exchange));
         Ok(exchange)
-    }
-}
-
-#[derive(Clone)]
-pub struct Manager {
-    ptr: RwArc<Inner>,
-}
-
-impl Manager {
-    pub fn new(keys: HashMap<String, Arc<ExchangeKey>>, db: Arc<LocalDB>) -> Self {
-        let inner = Inner::new(keys, db);
-        Self {
-            ptr: Arc::new(RwLock::new(inner)),
-        }
-    }
-
-    pub async fn tags(&self) -> Vec<String> {
-        let locked = self.ptr.read().await;
-        locked.tags.clone()
-    }
-
-    pub async fn instant(
-        &self,
-        tag: &str,
-        config: ExchangeConfig,
-    ) -> anyhow::Result<ExchangeArc> {
-        let mut locked = self.ptr.write().await;
-        locked.instant(tag, config).await
     }
 }
