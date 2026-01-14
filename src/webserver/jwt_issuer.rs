@@ -9,7 +9,7 @@ use cassry::{
     tokio::sync::RwLock,
     *,
 };
-use derive_more::Display;
+use derive_more::{Display, From, Into};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
@@ -18,24 +18,12 @@ use tower_cookies::Cookies;
 use uuid::Uuid;
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into)]
 #[display("{}", _0)]
 pub struct UserKey(#[serde_as(as = "DisplayFromStr")] pub i64);
 impl UserKey {
     pub fn value(&self) -> &i64 {
         &self.0
-    }
-}
-
-impl From<i64> for UserKey {
-    fn from(uid: i64) -> Self {
-        Self(uid)
-    }
-}
-
-impl Into<i64> for UserKey {
-    fn into(self) -> i64 {
-        self.0
     }
 }
 

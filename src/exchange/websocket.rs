@@ -100,7 +100,7 @@ struct Inner {
     pub subscribes: RwLock<HashSet<String>>,
     pub alived_cnt: Arc<RwLock<usize>>,
     pub connections: RwLock<HashMap<String, ConnectionRwArc>>,
-    pub connections_by_id: RwLock<HashMap<String, ConnectionRwArc>>,
+    pub connections_by_id: RwLock<HashMap<uuid::Uuid, ConnectionRwArc>>,
 }
 
 impl Inner {
@@ -116,7 +116,7 @@ impl Inner {
                 cassry::info!(
                     "opened websocket(total:{}, id:{}) : {}",
                     self.alived_cnt.read().await,
-                    websocket.get_uuid(),
+                    websocket.get_uuid().to_string(),
                     websocket.get_connected_url_str().unwrap_or_default()
                 );
             }
@@ -125,7 +125,7 @@ impl Inner {
                 cassry::info!(
                     "closed websocket(total:{}: id:{}) : {}",
                     self.alived_cnt.read().await,
-                    websocket.get_uuid(),
+                    websocket.get_uuid().to_string(),
                     websocket.get_connected_url_str().unwrap_or_default()
                 );
             }
@@ -230,10 +230,10 @@ impl Inner {
     }
 
     pub async fn insert_connection(&self, conn: Connection) -> RwArc<Connection> {
-        let id = conn.websocket.get_uuid().to_string();
+        let uuid = conn.websocket.get_uuid().clone();
         let group = conn.group.clone();
         let ptr = Arc::new(RwLock::new(conn));
-        self.connections_by_id.write().await.insert(id, ptr.clone());
+        self.connections_by_id.write().await.insert(uuid, ptr.clone());
         self.connections.write().await.insert(group, ptr.clone());
         ptr
     }
@@ -242,8 +242,8 @@ impl Inner {
         self.connections.read().await.get(group).cloned()
     }
 
-    pub async fn find_websocket_by_id(&self, id: &str) -> Option<ConnectionRwArc> {
-        self.connections_by_id.read().await.get(id).cloned()
+    pub async fn find_websocket_by_id(&self, uuid: &uuid::Uuid) -> Option<ConnectionRwArc> {
+        self.connections_by_id.read().await.get(uuid).cloned()
     }
 
     pub async fn count_alived(&self) -> usize {
@@ -325,13 +325,13 @@ impl ExchangeSocket {
 
             match ExchangeSocket::make_websocket(&inner, ws_param).await {
                 std::result::Result::Ok(websocket) => {
-                    let uuid = websocket.get_uuid().to_string();
+                    let uuid = websocket.get_uuid().clone();
                     let prev = conn.update_websocket(websocket);
                     cassry::info!(
                         "updated websocket : url({}), group({}), uuid({}->{})",
                         conn.websocket.get_connected_url_str().unwrap_or_default(),
                         conn.group,
-                        prev.get_uuid(),
+                        prev.get_uuid().to_string(),
                         uuid
                     );
 

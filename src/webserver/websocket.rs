@@ -209,7 +209,7 @@ pub trait ConnectionItf: Send + Sync + 'static {
     async fn send(&self, message: Message) -> anyhow::Result<()>;
     async fn close(&self, param: Option<(u16, String)>) -> anyhow::Result<()>;
     async fn is_connected(&self) -> bool;
-    fn get_uuid(&self) -> &str;
+    fn get_uuid(&self) -> &uuid::Uuid;
     fn get_created(&self) -> &DateTime<Utc>;
 }
 
@@ -266,7 +266,7 @@ struct ConnectionReal {
     sender: UnboundedSender<Message>,
 
     is_connected: RwArc<bool>,
-    uuid: (uuid::Uuid, String),
+    uuid: uuid::Uuid,
     created: DateTime<Utc>,
     eject: Arc<Eject>,
 }
@@ -279,7 +279,7 @@ impl ConnectionItf for ConnectionReal {
             _ => {
                 cassry::trace!(
                     "sending message using websocket({}) : {:?}",
-                    &self.get_uuid(),
+                    &self.get_uuid().to_string(),
                     message
                 );
             }
@@ -297,8 +297,8 @@ impl ConnectionItf for ConnectionReal {
         *self.is_connected.read().await
     }
 
-    fn get_uuid(&self) -> &str {
-        &self.uuid.1
+    fn get_uuid(&self) -> &uuid::Uuid {
+        &self.uuid
     }
 
     fn get_created(&self) -> &DateTime<Utc> {
@@ -329,7 +329,7 @@ impl ConnectionReal {
         let eject = Arc::new(Eject::new(param.get_pong_timeout().clone()));
         let is_connected = Arc::new(RwLock::new(true));
         let ws = Arc::from(Self {
-            uuid: (uuid, uuid.to_string()),
+            uuid: uuid,
             created: Utc::now(),
 
             param: param,
@@ -462,12 +462,14 @@ impl ConnectionReal {
 #[derive(Default)]
 pub struct ConnectionNull {
     created: DateTime<Utc>,
+    uuid: uuid::Uuid,
 }
 
 impl ConnectionNull {
     pub fn new() -> Arc<Self> {
         let now = Utc::now();
-        Arc::new(ConnectionNull { created: now })
+        let uuid = uuid::Uuid::new_v4();
+        Arc::new(ConnectionNull { created: now, uuid: uuid })
     }
 }
 
@@ -482,9 +484,12 @@ impl ConnectionItf for ConnectionNull {
     async fn is_connected(&self) -> bool {
         true
     }
-    fn get_uuid(&self) -> &str {
-        ""
+
+    fn get_uuid(&self) -> &uuid::Uuid {
+        &self.uuid
     }
+
+
     fn get_created(&self) -> &DateTime<Utc> {
         &self.created
     }
@@ -595,7 +600,7 @@ impl Websocket {
         self.conn.get_created().clone()
     }
 
-    pub fn get_uuid(&self) -> &str {
+    pub fn get_uuid(&self) -> &uuid::Uuid {
         self.conn.get_uuid()
     }
 }
