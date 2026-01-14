@@ -20,21 +20,21 @@ use uuid::Uuid;
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into)]
 #[display("{}", _0)]
-pub struct UserKey(#[serde_as(as = "DisplayFromStr")] pub i64);
-impl UserKey {
+pub struct UidKey(#[serde_as(as = "DisplayFromStr")] pub i64);
+impl UidKey {
     pub fn value(&self) -> &i64 {
         &self.0
     }
 }
 
-impl Into<String> for UserKey {
+impl Into<String> for UidKey {
     fn into(self) -> String {
         self.0.to_string()
     }
 }
 
 pub struct LoginParams {
-    pub uid: UserKey,
+    pub uid: UidKey,
     pub password: String,
     pub role: i64,
 
@@ -48,10 +48,10 @@ pub trait DerivedFrom {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserPayload {
+pub struct CsrfPayload {
     pub derived_from: [u8; 16],
 
-    pub uid: UserKey,
+    pub uid: UidKey,
     pub role: i64,
     pub nick: String,
 
@@ -61,7 +61,7 @@ pub struct UserPayload {
     pub payload_created_at: i64,
 }
 
-impl DerivedFrom for UserPayload {
+impl DerivedFrom for CsrfPayload {
     fn get_derived_from(&self) -> Uuid {
         Uuid::from_bytes(self.derived_from.clone())
     }
@@ -71,7 +71,7 @@ impl DerivedFrom for UserPayload {
 pub struct AccessPayload {
     pub derived_from: [u8; 16],
 
-    pub uid: UserKey,
+    pub uid: UidKey,
     pub payload_created_at: i64,
 }
 
@@ -83,7 +83,7 @@ impl DerivedFrom for AccessPayload {
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct UserRefreshClaims {
+pub struct SasRefreshClaims {
     /// 토큰 고유 ID
     #[serde(rename = "_id")]
     #[serde_as(as = "DisplayFromStr")]
@@ -96,7 +96,7 @@ pub struct UserRefreshClaims {
     pub iss: String,
 
     /// 사용자 ID
-    pub sub: UserKey,
+    pub sub: UidKey,
     /// 발급 시간
     #[serde_as(as = "FromChrono04DateTime")]
     pub iat: DateTime<Utc>,
@@ -112,7 +112,7 @@ pub struct UserRefreshClaims {
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct UserClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
+pub struct SasClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
     /// 토큰 고유 ID
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
@@ -124,16 +124,16 @@ pub struct UserClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
     pub payload: T,
 }
 
-impl<T: DerivedFrom + Serialize + DeserializeOwned> DerivedFrom for UserClaimsFrame<T> {
+impl<T: DerivedFrom + Serialize + DeserializeOwned> DerivedFrom for SasClaimsFrame<T> {
     fn get_derived_from(&self) -> Uuid {
         self.payload.get_derived_from()
     }
 }
 
-pub type UserAccessClaims = UserClaimsFrame<AccessPayload>;
-pub type UserCsrfClaims = UserClaimsFrame<UserPayload>;
+pub type SasAccessClaims = SasClaimsFrame<AccessPayload>;
+pub type SasCsrfClaims = SasClaimsFrame<CsrfPayload>;
 
-impl<S> FromRequestParts<S> for UserAccessClaims
+impl<S> FromRequestParts<S> for SasAccessClaims
 where
     S: Send + Sync,
 {
@@ -167,7 +167,7 @@ where
     }
 }
 
-impl<S> FromRequestParts<S> for UserCsrfClaims
+impl<S> FromRequestParts<S> for SasCsrfClaims
 where
     S: Send + Sync,
 {
@@ -205,15 +205,15 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IssuedClaims {
-    pub refresh_claims: UserRefreshClaims,
+    pub refresh_claims: SasRefreshClaims,
     pub access_token: String,
     pub csrf_token: String,
     pub csrf_dump: String,
 }
 
 pub struct ClaimsPair {
-    pub access_claims: UserAccessClaims,
-    pub csrf_claims: UserCsrfClaims,
+    pub access_claims: SasAccessClaims,
+    pub csrf_claims: SasCsrfClaims,
 }
 
 
@@ -376,7 +376,7 @@ impl TokenIssuerImpl {
 
     pub fn generate_dump_nonce(
         &self,
-        access_claims: &UserAccessClaims,
+        access_claims: &SasAccessClaims,
         addr: &IpAddr,
     ) -> anyhow::Result<Vec<u8>> {
         let addr = postcard::to_stdvec(addr)?;
@@ -434,9 +434,9 @@ impl TokenIssuerImpl {
         &self,
         access_token: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<UserAccessClaims> {
+    ) -> anyhow::Result<SasAccessClaims> {
         self.access_isser
-            .verify::<UserAccessClaims>(access_token, validation).await
+            .verify::<SasAccessClaims>(access_token, validation).await
             .and_then(|claims| {
                 if self.contains_block(&claims.payload.get_derived_from()) {
                     return Err(anyhow::anyhow!("Blocked refresh token"));
@@ -447,11 +447,11 @@ impl TokenIssuerImpl {
 
     pub async fn verify_jwt_csrf(
         &self,
-        access_claims: &UserAccessClaims,
+        access_claims: &SasAccessClaims,
         csrf_token: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<UserCsrfClaims> {
-        self.csrf_isser.verify_with_nonce::<UserCsrfClaims>(
+    ) -> anyhow::Result<SasCsrfClaims> {
+        self.csrf_isser.verify_with_nonce::<SasCsrfClaims>(
             csrf_token,
             access_claims.jti.as_bytes(),
             validation,
@@ -480,7 +480,7 @@ impl TokenIssuerImpl {
     pub async fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
         let now = Utc::now();
         let refresh_jti = Uuid::new_v4();
-        let refresh_claims = UserRefreshClaims {
+        let refresh_claims = SasRefreshClaims {
             jti: refresh_jti,
             exp: now + self.refresh_ttl,
             iss: self.name.clone(),
@@ -499,13 +499,13 @@ impl TokenIssuerImpl {
         };
 
         let access_jti = Uuid::new_v4();
-        let access_claims = UserAccessClaims {
+        let access_claims = SasAccessClaims {
             jti: access_jti,
             exp: now + self.access_ttl,
             payload: access_payload,
         };
 
-        let user_payload = UserPayload {
+        let user_payload = CsrfPayload {
             derived_from: access_jti.into_bytes(),
             uid: params.uid.clone(),
             role: params.role,
@@ -526,7 +526,7 @@ impl TokenIssuerImpl {
 
     pub fn decrypt_csrf_dump(
         &self,
-        access_claims: &UserAccessClaims,
+        access_claims: &SasAccessClaims,
         addr: &IpAddr,
         csrf_dump: &str,
     ) -> anyhow::Result<String> {
@@ -543,10 +543,10 @@ impl TokenIssuerImpl {
 
     pub async fn generate_csrf_token(
         &self,
-        access_claims: &UserAccessClaims,
-        user_payload: UserPayload,
+        access_claims: &SasAccessClaims,
+        user_payload: CsrfPayload,
     ) -> anyhow::Result<(String, String)> {
-        let csrf_claims = UserCsrfClaims {
+        let csrf_claims = SasCsrfClaims {
             jti: Uuid::new_v4(),
             exp: access_claims.exp,
             payload: user_payload,
@@ -569,9 +569,9 @@ impl TokenIssuerImpl {
 
     pub async fn refresh_access_token(
         &self,
-        prev_access_claims: &UserAccessClaims,
-        prev_refresh_clams: UserRefreshClaims,
-        mut user_payload: UserPayload,
+        prev_access_claims: &SasAccessClaims,
+        prev_refresh_clams: SasRefreshClaims,
+        mut user_payload: CsrfPayload,
     ) -> anyhow::Result<IssuedClaims> {
         if prev_access_claims.payload.uid != user_payload.uid
             || prev_access_claims.payload.get_derived_from() != prev_refresh_clams.jti
@@ -585,7 +585,7 @@ impl TokenIssuerImpl {
         let now = Utc::now();
 
         let refresh_jti = Uuid::new_v4();
-        let refresh_claims = UserRefreshClaims {
+        let refresh_claims = SasRefreshClaims {
             jti: refresh_jti,
             exp: now + self.refresh_ttl,
 
@@ -604,7 +604,7 @@ impl TokenIssuerImpl {
             payload_created_at: now.timestamp_millis(),
         };
         let access_jti = Uuid::new_v4();
-        let access_claims = UserAccessClaims {
+        let access_claims = SasAccessClaims {
             jti: access_jti.clone(),
             exp: now + self.access_ttl,
             payload: access_payload,
@@ -691,9 +691,9 @@ impl TokenIssuer {
 
     pub async fn refresh_access_token(
         &self,
-        prev_access_claims: &UserAccessClaims,
-        prev_refresh_clams: UserRefreshClaims,
-        user_payload: UserPayload,
+        prev_access_claims: &SasAccessClaims,
+        prev_refresh_clams: SasRefreshClaims,
+        user_payload: CsrfPayload,
     ) -> anyhow::Result<IssuedClaims> {
         self.isser.refresh_access_token(
             &prev_access_claims,
@@ -704,10 +704,10 @@ impl TokenIssuer {
 
     pub async fn verify_jwt_csrf(
         &self,
-        access_claims: &UserAccessClaims,
+        access_claims: &SasAccessClaims,
         csrf_token: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<UserCsrfClaims> {
+    ) -> anyhow::Result<SasCsrfClaims> {
         self.isser
             .verify_jwt_csrf(access_claims, csrf_token, validation).await
     }
@@ -716,7 +716,7 @@ impl TokenIssuer {
         &self,
         cookies: &Cookies,
         validation: Option<Validation>,
-    ) -> Result<UserAccessClaims, HttpError> {
+    ) -> Result<SasAccessClaims, HttpError> {
         let access_token = cookies
             .get(TokenIssuer::get_cookie_name())
             .ok_or(HttpError::MissingJwtToken)?;
@@ -764,7 +764,7 @@ impl TokenIssuer {
 
     pub async fn decrypt_csrf_dump(
         &self,
-        access_claims: &UserAccessClaims,
+        access_claims: &SasAccessClaims,
         addr: &IpAddr,
         csrf_dump: &str,
     ) -> anyhow::Result<String> {
