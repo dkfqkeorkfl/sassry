@@ -22,6 +22,7 @@ pub use uuid;
 pub use cassry_derive::ErrCode;
 pub use mongodb;
 pub use bson;
+pub use validator;
 
 #[cfg(debug_assertions)]
 pub const DEBUG_POST_FIX: &str = ".dev";

@@ -1,9 +1,22 @@
-use axum::http::StatusCode;
+use axum::{Json, extract::{FromRequest, Request}, http::StatusCode};
 use cassry::*;
+use serde::de::DeserializeOwned;
 use thiserror::Error;
+use validator::Validate;
 /// HTTP status code별 대표적인 에러 타입들
 #[derive(Debug, Error, cassry_derive::ErrCode)]
 pub enum HttpError {
+    /// 400 Bad Request - 잘못된 요청
+    #[status(400)]
+    #[value(1)]
+    #[error("{0}")]
+    JsonParseError(#[from] axum::extract::rejection::JsonRejection),
+
+    #[status(400)]
+    #[value(2)]
+    #[error("{0}")]
+    ValidationError(#[from] validator::ValidationErrors),
+
     /// 400 Bad Request - 잘못된 요청
     #[status(400)]
     #[error("{0}")]
@@ -98,5 +111,21 @@ impl axum::response::IntoResponse for HttpError {
                 (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response()
             }
         }
+    }
+}
+
+pub struct ValidatedJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for ValidatedJson<T>
+where
+    T: DeserializeOwned + Validate,
+    S: Send + Sync,
+{
+    type Rejection = HttpError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(value) = Json::<T>::from_request(req, state).await?;
+        value.validate()?;
+        Ok(ValidatedJson(value))
     }
 }

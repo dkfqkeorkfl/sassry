@@ -22,6 +22,7 @@ serde_with = { version = "3", features = ["chrono_0_4", "base64", "hex"] }
 thiserror = "2"
 async-trait = "0.1"
 derive_more = { version = "2", features = ["full"] }
+validator = { version = "0.20", features = ["derive"] }
 
 # tokio stream - tokio-tungstenite를 쓰기 위해서는 rustls에서 ring이나 aws-lc-rs 피쳐를 활성해서 Provider를 설정해야 함
 tokio-tungstenite = { version = "0.28.0", features = [

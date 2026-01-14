@@ -20,7 +20,7 @@ use uuid::Uuid;
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into)]
 #[display("{}", _0)]
-pub struct UidKey(#[serde_as(as = "DisplayFromStr")] pub i64);
+pub struct UidKey(#[serde_as(as = "DisplayFromStr")] i64);
 impl UidKey {
     pub fn value(&self) -> &i64 {
         &self.0
