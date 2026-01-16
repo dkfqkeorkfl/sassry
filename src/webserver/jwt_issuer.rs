@@ -33,19 +33,6 @@ impl Into<String> for UidKey {
     }
 }
 
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into, Deref)]
-#[display("{}", _0)]
-pub struct UidKeyRaw(
-    #[serde_as(as = "FromInto<i64>")]
-    UidKey);
-
-impl UidKeyRaw {
-    pub fn value(&self) -> &i64 {
-        &self.0.value()
-    }
-}
-
 pub struct LoginParams {
     pub uid: UidKey,
     pub password: String,
@@ -65,6 +52,7 @@ pub struct CsrfPayload {
     #[serde(with = "uuid::serde::compact")]
     pub derived_from: uuid::Uuid,
 
+    #[serde_as(as = "FromInto<i64>")]
     pub uid: UidKey,
     pub role: i64,
     pub nick: String,
@@ -88,6 +76,7 @@ pub struct AccessPayload {
     #[serde(with = "uuid::serde::compact")]
     pub derived_from: uuid::Uuid,
 
+    #[serde_as(as = "FromInto<i64>")]
     pub uid: UidKey,
     #[serde_as(as = "TimestampMilliSeconds")]
     pub login_at: DateTime<Utc>,
@@ -130,10 +119,6 @@ pub struct SasRefreshClaims {
 
     /// 토큰 고유 ID
     pub jti: Uuid,
-
-    /// 발급 시간
-    #[serde_as(as = "FromChrono04DateTime")]
-    pub iat: DateTime<Utc>,
 
     /// 토큰의 만료 시간
     #[serde_as(as = "FromChrono04DateTime")]
