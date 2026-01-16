@@ -1,5 +1,6 @@
 use super::error::HttpError;
 use axum::{extract::FromRequestParts, http::HeaderMap};
+use axum_extra::headers::UserAgent;
 use bson::{oid::ObjectId, serde_helpers::datetime::FromChrono04DateTime};
 use cassry::{
     base64::Engine,
@@ -12,7 +13,7 @@ use cassry::{
 use derive_more::{Display, From, Into};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, TimestampSeconds, TimestampMilliSeconds, FromInto};
+use serde_with::{serde_as, DisplayFromStr, FromInto, TimestampMilliSeconds, TimestampSeconds};
 use std::{net::IpAddr, sync::Arc, u64};
 use tower_cookies::Cookies;
 use uuid::Uuid;
@@ -39,7 +40,8 @@ pub struct LoginParams {
     pub role: i64,
 
     pub nick: String,
-    pub login_ip: IpAddr,
+    pub ip: IpAddr,
+    pub user_agent: UserAgent,
 }
 
 #[serde_as]
@@ -53,11 +55,11 @@ pub struct CsrfPayload {
     pub role: i64,
     pub nick: String,
 
-    #[serde(with = "serialization::ipaddr_bytes")]
-    pub login_ip: IpAddr,
-
     #[serde_as(as = "TimestampMilliSeconds")]
     pub login_at: DateTime<Utc>,
+
+    #[serde_as(as = "TimestampMilliSeconds")]
+    pub origin_at: DateTime<Utc>,
 }
 
 #[serde_as]
@@ -70,25 +72,39 @@ pub struct AccessPayload {
     pub uid: UidKey,
     #[serde_as(as = "TimestampMilliSeconds")]
     pub login_at: DateTime<Utc>,
+
+    #[serde_as(as = "TimestampMilliSeconds")]
+    pub origin_at: DateTime<Utc>,
 }
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasRefreshmutable {
     pub failed: usize,
+    #[serde_as(as = "DisplayFromStr")]
+    pub ip: IpAddr,
+
+    #[serde_as(as = "DisplayFromStr")]
+    pub user_agent: UserAgent,
+
+    #[serde_as(as = "FromChrono04DateTime")]
+    pub updated_at: DateTime<Utc>,
 }
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasRefreshImmutable {
-    /// 발급자
-    pub iss: String,
+    /// 최초 발급자
+    pub origin_iss: String,
     pub role: i64,
     pub password: String,
 
     #[serde_as(as = "DisplayFromStr")]
-    pub ip: IpAddr,
+    pub origin_ip: IpAddr,
+    #[serde_as(as = "DisplayFromStr")]
+    pub origin_user_agent: UserAgent,
 
+    // access payload, csrf payload의 origin_at
     #[serde_as(as = "FromChrono04DateTime")]
     pub created_at: DateTime<Utc>,
 }
@@ -96,46 +112,50 @@ pub struct SasRefreshImmutable {
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasRefreshClaims {
-    // #[serde(default)]
-    // #[serde(skip)]
-    // #[serde(rename = "_id")]
-    // pub id: Option<ObjectId>,
+    #[serde(default)]
+    #[serde(skip)]
+    #[serde(rename = "_id")]
+    pub id: Option<ObjectId>,
 
     /// 토큰 고유 ID
+    #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
 
     /// 토큰의 만료 시간
     #[serde_as(as = "FromChrono04DateTime")]
     pub exp: DateTime<Utc>,
-    /// 발급자
-    pub iss: String,
 
     /// 사용자 ID
     pub sub: UidKey,
+
+    /// 발급자
+    pub iss: String,
+    /// 대상 서비스
+    pub aud: String,
+
     /// 발급 시간
     #[serde_as(as = "FromChrono04DateTime")]
     pub iat: DateTime<Utc>,
 
-    /// 환경
-    #[serde_as(as = "DisplayFromStr")]
-    pub env: IpAddr,
-
-    pub role: i64,
-    pub failed: usize,
-    pub password: String,
+    /// additional datas
+    pub immutable: Arc<SasRefreshImmutable>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutable: Option<SasRefreshmutable>,
 }
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasClaimsFrame<T: Serialize + DeserializeOwned> {
     /// 토큰 고유 ID
+    #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
     /// 토큰의 만료 시간(jwt는 초단위 지원)
     #[serde_as(as = "TimestampSeconds")]
     pub exp: DateTime<Utc>,
 
     #[serde(with = "serialization::postcard_base64")]
-    pub payload: T,
+    pub payload: Arc<T>,
 }
 
 pub type SasAccessClaims = SasClaimsFrame<AccessPayload>;
@@ -224,7 +244,6 @@ pub struct ClaimsPair {
     pub csrf_claims: SasCsrfClaims,
 }
 
-
 pub struct KyInfo {
     pub created_at: DateTime<Local>,
     pub secret: SecretSlice<u8>,
@@ -241,7 +260,11 @@ impl JwtIssuer {
         self.secret.clone()
     }
 
-    pub async fn insert_key(&self, created_at: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
+    pub async fn insert_key(
+        &self,
+        created_at: DateTime<Local>,
+        origin: &str,
+    ) -> anyhow::Result<()> {
         let arr = self.secret.expose_secret().as_bytes().try_into()?;
         let mut hasher = blake3::Hasher::new_keyed(&arr);
         hasher.update(origin.as_bytes());
@@ -252,15 +275,16 @@ impl JwtIssuer {
             let bytes = postcard::to_stdvec(&created_at.timestamp_millis())?;
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
         };
-        
-        self.keys.insert(key.clone(), Arc::new(KyInfo { created_at, secret })).await;
+
+        self.keys
+            .insert(key.clone(), Arc::new(KyInfo { created_at, secret }))
+            .await;
         let mut locked = self.main.write().await;
         if let Some(prev) = self.keys.get(locked.as_str()).await {
             if prev.created_at < created_at {
                 *locked = key;
             }
-        }
-        else {
+        } else {
             *locked = key;
         }
 
@@ -269,7 +293,10 @@ impl JwtIssuer {
 
     pub async fn get_key(&self) -> Option<(String, Arc<KyInfo>)> {
         let locked = self.main.read().await;
-        self.keys.get(locked.as_str()).await.map(|x| (locked.clone(), x))
+        self.keys
+            .get(locked.as_str())
+            .await
+            .map(|x| (locked.clone(), x))
     }
 
     pub async fn generate_jwt_with_nonce<T: Serialize>(
@@ -277,7 +304,10 @@ impl JwtIssuer {
         claims: &T,
         nonce: &[u8],
     ) -> anyhow::Result<String> {
-        let (key, info) = self.get_key().await.ok_or(anyhow::anyhow!("Key not found"))?;
+        let (key, info) = self
+            .get_key()
+            .await
+            .ok_or(anyhow::anyhow!("Key not found"))?;
         let mut header = jsonwebtoken::Header::default();
         header.kid = Some(key);
 
@@ -285,12 +315,8 @@ impl JwtIssuer {
         hasher.update(nonce);
         let hash = hasher.finalize();
 
-        jsonwebtoken::encode(
-            &header,
-            claims,
-            &EncodingKey::from_secret(hash.as_bytes()),
-        )
-        .map_err(anyhow::Error::from)
+        jsonwebtoken::encode(&header, claims, &EncodingKey::from_secret(hash.as_bytes()))
+            .map_err(anyhow::Error::from)
     }
 
     pub async fn verify_with_nonce<T: DeserializeOwned>(
@@ -299,8 +325,14 @@ impl JwtIssuer {
         nonce: &[u8],
         validation: Option<Validation>,
     ) -> anyhow::Result<T> {
-        let kid = jsonwebtoken::decode_header(token)?.kid.ok_or(anyhow::anyhow!("Key not found"))?;
-        let info = self.keys.get(&kid).await.ok_or(anyhow::anyhow!("Key not found"))?;
+        let kid = jsonwebtoken::decode_header(token)?
+            .kid
+            .ok_or(anyhow::anyhow!("Key not found"))?;
+        let info = self
+            .keys
+            .get(&kid)
+            .await
+            .ok_or(anyhow::anyhow!("Key not found"))?;
 
         let mut hasher = blake3::Hasher::new_keyed(&info.secret.expose_secret().try_into()?);
         hasher.update(nonce);
@@ -316,7 +348,10 @@ impl JwtIssuer {
     }
 
     pub async fn generate_jwt<T: Serialize>(&self, claims: &T) -> anyhow::Result<String> {
-        let (key, info) = self.get_key().await.ok_or(anyhow::anyhow!("Key not found"))?;
+        let (key, info) = self
+            .get_key()
+            .await
+            .ok_or(anyhow::anyhow!("Key not found"))?;
         let mut header = jsonwebtoken::Header::default();
         header.kid = Some(key);
         jsonwebtoken::encode(
@@ -332,8 +367,14 @@ impl JwtIssuer {
         token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<T> {
-        let kid = jsonwebtoken::decode_header(token)?.kid.ok_or(anyhow::anyhow!("Key not found"))?;
-        let info = self.keys.get(&kid).await.ok_or(anyhow::anyhow!("Key not found"))?;
+        let kid = jsonwebtoken::decode_header(token)?
+            .kid
+            .ok_or(anyhow::anyhow!("Key not found"))?;
+        let info = self
+            .keys
+            .get(&kid)
+            .await
+            .ok_or(anyhow::anyhow!("Key not found"))?;
 
         jsonwebtoken::decode::<T>(
             token,
@@ -444,7 +485,8 @@ impl TokenIssuerImpl {
         validation: Option<Validation>,
     ) -> anyhow::Result<SasAccessClaims> {
         self.access_isser
-            .verify::<SasAccessClaims>(access_token, validation).await
+            .verify::<SasAccessClaims>(access_token, validation)
+            .await
             .and_then(|claims| {
                 if self.contains_block(&claims.payload.derived_from) {
                     return Err(anyhow::anyhow!("Blocked refresh token"));
@@ -459,11 +501,13 @@ impl TokenIssuerImpl {
         csrf_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<SasCsrfClaims> {
-        self.csrf_isser.verify_with_nonce::<SasCsrfClaims>(
-            csrf_token,
-            access_claims.jti.as_bytes(),
-            validation,
-        ).await
+        self.csrf_isser
+            .verify_with_nonce::<SasCsrfClaims>(
+                csrf_token,
+                access_claims.jti.as_bytes(),
+                validation,
+            )
+            .await
     }
 
     /// JWT 토큰 검증 (유효성, 만료 등)
@@ -473,8 +517,12 @@ impl TokenIssuerImpl {
         csrf_token: &str,
         validation: Option<Validation>,
     ) -> anyhow::Result<ClaimsPair> {
-        let access_claims = self.verify_jwt_access(access_token, validation.clone()).await?;
-        let csrf_claims = self.verify_jwt_csrf(&access_claims, csrf_token, validation).await?;
+        let access_claims = self
+            .verify_jwt_access(access_token, validation.clone())
+            .await?;
+        let csrf_claims = self
+            .verify_jwt_csrf(&access_claims, csrf_token, validation)
+            .await?;
         if self.contains_block(&access_claims.jti) {
             return Err(anyhow::anyhow!("Invalid access token"));
         }
@@ -487,42 +535,51 @@ impl TokenIssuerImpl {
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
     pub async fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
         let now = Utc::now();
-        let refresh_jti = Uuid::now_v7();
+        let refresh_jti = util::datetime_to_uuid7(now)?;
         let refresh_claims = SasRefreshClaims {
+            id: None,
             jti: refresh_jti,
             exp: now + self.refresh_ttl,
             iss: self.name.clone(),
+            aud: self.name.clone(),
             sub: params.uid.clone(),
             iat: now,
-            env: params.login_ip,
-            role: params.role,
-            failed: 0,
-            password: params.password,
+            immutable: Arc::new(SasRefreshImmutable {
+                origin_iss: self.name.clone(),
+                role: params.role,
+                password: params.password,
+                origin_ip: params.ip,
+                origin_user_agent: params.user_agent,
+                created_at: now,
+            }),
+            mutable: None,
         };
 
         let access_payload = AccessPayload {
             derived_from: refresh_jti,
             uid: params.uid.clone(),
             login_at: now,
+            origin_at: now,
         };
 
-        let access_jti = Uuid::now_v7();
         let access_claims = SasAccessClaims {
-            jti: access_jti,
+            jti: Uuid::now_v7(),
             exp: now + self.access_ttl,
-            payload: access_payload,
+            payload: access_payload.into(),
         };
 
         let user_payload = CsrfPayload {
-            derived_from: access_jti,
+            derived_from: refresh_jti,
             uid: params.uid.clone(),
             role: params.role,
             nick: params.nick,
-            login_ip: params.login_ip,
+            origin_at: now,
             login_at: now,
         };
 
-        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload).await?;
+        let (csrf_token, csrf_dump) = self
+            .generate_csrf_token(&access_claims, user_payload, &params.ip)
+            .await?;
         Ok(IssuedClaims {
             refresh_claims,
             access_token: self.access_isser.generate_jwt(&access_claims).await?,
@@ -552,17 +609,23 @@ impl TokenIssuerImpl {
         &self,
         access_claims: &SasAccessClaims,
         user_payload: CsrfPayload,
+        ip: &IpAddr,
     ) -> anyhow::Result<(String, String)> {
+        // 추후 csrf key로 dump_nonce 생성필요 - 로테이션을 위함
         let csrf_claims = SasCsrfClaims {
-            jti: Uuid::new_v4(),
+            jti: Uuid::now_v7(),
             exp: access_claims.exp,
-            payload: user_payload,
+            payload: user_payload.into(),
         };
 
+        // access claims의 jti를 사용하여 csrf token 생성. 즉, access token가 없으면 verify 불가
+        // dump는 새로 고침을 위한 유틸리티이므로 ip를 통하여 보다 강력하게 제약을 둠.
         let csrf_token = self
             .csrf_isser
-            .generate_jwt_with_nonce(&csrf_claims, access_claims.jti.as_bytes()).await?;
-        let nonce = self.generate_dump_nonce(access_claims, &csrf_claims.payload.login_ip)?;
+            .generate_jwt_with_nonce(&csrf_claims, access_claims.jti.as_bytes())
+            .await?;
+        // ip를 사용하여 csrf dump 생성. 즉, ip가 같지 않으면 verify 불가
+        let nonce = self.generate_dump_nonce(access_claims, ip)?;
         let encrypted = util::encrypt_str_by_aes_gcm_128(
             access_claims.jti.as_bytes().try_into()?,
             nonce.as_slice().try_into()?,
@@ -576,49 +639,58 @@ impl TokenIssuerImpl {
 
     pub async fn refresh_access_token(
         &self,
-        prev_access_claims: &SasAccessClaims,
         prev_refresh_clams: SasRefreshClaims,
-        mut user_payload: CsrfPayload,
+        prev_payload: &Arc<CsrfPayload>,
+        ip: &IpAddr,
+        user_agent: &UserAgent,
     ) -> anyhow::Result<IssuedClaims> {
-        if prev_access_claims.payload.uid != user_payload.uid
-            || prev_access_claims.payload.derived_from != prev_refresh_clams.jti
+        if prev_refresh_clams.sub != prev_payload.uid
+            || prev_payload.derived_from != prev_refresh_clams.jti
         {
             return Err(anyhow::anyhow!(
                 "Invalid refresh token: uid={}",
-                prev_access_claims.payload.uid
+                prev_payload.uid
             ));
         }
 
         let now = Utc::now();
-
-        let refresh_jti = Uuid::now_v7();
+        let refresh_jti = util::datetime_to_uuid7(now)?;
         let refresh_claims = SasRefreshClaims {
+            id: None,
             jti: refresh_jti,
             exp: now + self.refresh_ttl,
 
             iss: self.name.clone(),
+            aud: prev_refresh_clams.aud,
             sub: prev_refresh_clams.sub,
             iat: now,
-            env: prev_refresh_clams.env,
-            role: prev_refresh_clams.role,
-            failed: prev_refresh_clams.failed,
-            password: prev_refresh_clams.password,
+            immutable: prev_refresh_clams.immutable.clone(),
+            mutable: SasRefreshmutable {
+                failed: 0,
+                ip: ip.clone(),
+                user_agent: user_agent.clone(),
+                updated_at: now,
+            }
+            .into(),
         };
 
         let access_payload = AccessPayload {
             derived_from: refresh_jti,
-            uid: user_payload.uid.clone(),
-            login_at: user_payload.login_at.clone(),
+            uid: prev_payload.uid.clone(),
+            login_at: prev_payload.login_at.clone(),
+            origin_at: prev_payload.origin_at.clone(),
         };
-        let access_jti = Uuid::now_v7();
         let access_claims = SasAccessClaims {
-            jti: access_jti.clone(),
+            jti: Uuid::now_v7(),
             exp: now + self.access_ttl,
-            payload: access_payload,
+            payload: access_payload.into(),
         };
 
-        user_payload.derived_from = access_jti;
-        let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload).await?;
+        let mut user_payload = prev_payload.as_ref().clone();
+        user_payload.derived_from = refresh_jti;
+        let (csrf_token, csrf_dump) = self
+            .generate_csrf_token(&access_claims, user_payload, ip)
+            .await?;
         Ok(IssuedClaims {
             refresh_claims,
             access_token: self.access_isser.generate_jwt(&access_claims).await?,
@@ -697,15 +769,14 @@ impl TokenIssuer {
 
     pub async fn refresh_access_token(
         &self,
-        prev_access_claims: &SasAccessClaims,
         prev_refresh_clams: SasRefreshClaims,
-        user_payload: CsrfPayload,
+        prev_payload: &Arc<CsrfPayload>,
+        ip: &IpAddr,
+        user_agent: &UserAgent,
     ) -> anyhow::Result<IssuedClaims> {
-        self.isser.refresh_access_token(
-            &prev_access_claims,
-            prev_refresh_clams,
-            user_payload,
-        ).await
+        self.isser
+            .refresh_access_token(prev_refresh_clams, prev_payload, ip, user_agent)
+            .await
     }
 
     pub async fn verify_jwt_csrf(
@@ -715,7 +786,8 @@ impl TokenIssuer {
         validation: Option<Validation>,
     ) -> anyhow::Result<SasCsrfClaims> {
         self.isser
-            .verify_jwt_csrf(access_claims, csrf_token, validation).await
+            .verify_jwt_csrf(access_claims, csrf_token, validation)
+            .await
     }
 
     pub async fn extract_access_claims_from(
@@ -728,7 +800,8 @@ impl TokenIssuer {
             .ok_or(HttpError::MissingJwtToken)?;
         let access_claims = self
             .isser
-            .verify_jwt_access(access_token.value(), validation).await
+            .verify_jwt_access(access_token.value(), validation)
+            .await
             .map_err(|e| HttpError::InvalidJwt(e))?;
         Ok(access_claims)
     }
@@ -744,7 +817,8 @@ impl TokenIssuer {
             .ok_or(HttpError::MissingJwtToken)?;
 
         self.isser
-            .verify_jwt_pair(access_token.value(), csrf_token, validation).await
+            .verify_jwt_pair(access_token.value(), csrf_token, validation)
+            .await
             .map_err(|e| HttpError::InvalidJwt(e))
     }
 
@@ -774,7 +848,6 @@ impl TokenIssuer {
         addr: &IpAddr,
         csrf_dump: &str,
     ) -> anyhow::Result<String> {
-        self.isser
-            .decrypt_csrf_dump(access_claims, addr, csrf_dump)
+        self.isser.decrypt_csrf_dump(access_claims, addr, csrf_dump)
     }
 }
