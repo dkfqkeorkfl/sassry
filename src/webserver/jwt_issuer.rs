@@ -9,7 +9,7 @@ use cassry::{
     tokio::sync::RwLock,
     *,
 };
-use derive_more::{Deref, Display, From, Into};
+use derive_more::{Display, From, Into};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, TimestampSeconds, TimestampMilliSeconds, FromInto};
@@ -42,10 +42,6 @@ pub struct LoginParams {
     pub login_ip: IpAddr,
 }
 
-pub trait DerivedFrom {
-    fn get_derived_from(&self) -> Uuid;
-}
-
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsrfPayload {
@@ -64,12 +60,6 @@ pub struct CsrfPayload {
     pub login_at: DateTime<Utc>,
 }
 
-impl DerivedFrom for CsrfPayload {
-    fn get_derived_from(&self) -> Uuid {
-        self.derived_from.clone()
-    }
-}
-
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessPayload {
@@ -80,12 +70,6 @@ pub struct AccessPayload {
     pub uid: UidKey,
     #[serde_as(as = "TimestampMilliSeconds")]
     pub login_at: DateTime<Utc>,
-}
-
-impl DerivedFrom for AccessPayload {
-    fn get_derived_from(&self) -> uuid::Uuid {
-        self.derived_from.clone()
-    }
 }
 
 #[serde_as]
@@ -143,7 +127,7 @@ pub struct SasRefreshClaims {
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SasClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
+pub struct SasClaimsFrame<T: Serialize + DeserializeOwned> {
     /// 토큰 고유 ID
     pub jti: Uuid,
     /// 토큰의 만료 시간(jwt는 초단위 지원)
@@ -152,12 +136,6 @@ pub struct SasClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
 
     #[serde(with = "serialization::postcard_base64")]
     pub payload: T,
-}
-
-impl<T: DerivedFrom + Serialize + DeserializeOwned> DerivedFrom for SasClaimsFrame<T> {
-    fn get_derived_from(&self) -> Uuid {
-        self.payload.get_derived_from()
-    }
 }
 
 pub type SasAccessClaims = SasClaimsFrame<AccessPayload>;
@@ -468,7 +446,7 @@ impl TokenIssuerImpl {
         self.access_isser
             .verify::<SasAccessClaims>(access_token, validation).await
             .and_then(|claims| {
-                if self.contains_block(&claims.payload.get_derived_from()) {
+                if self.contains_block(&claims.payload.derived_from) {
                     return Err(anyhow::anyhow!("Blocked refresh token"));
                 }
                 Ok(claims)
@@ -603,7 +581,7 @@ impl TokenIssuerImpl {
         mut user_payload: CsrfPayload,
     ) -> anyhow::Result<IssuedClaims> {
         if prev_access_claims.payload.uid != user_payload.uid
-            || prev_access_claims.payload.get_derived_from() != prev_refresh_clams.jti
+            || prev_access_claims.payload.derived_from != prev_refresh_clams.jti
         {
             return Err(anyhow::anyhow!(
                 "Invalid refresh token: uid={}",
