@@ -1,6 +1,6 @@
 use super::error::HttpError;
 use axum::{extract::FromRequestParts, http::HeaderMap};
-use bson::serde_helpers::datetime::FromChrono04DateTime;
+use bson::{oid::ObjectId, serde_helpers::datetime::FromChrono04DateTime};
 use cassry::{
     base64::Engine,
     chrono::{DateTime, Local, Utc},
@@ -9,10 +9,10 @@ use cassry::{
     tokio::sync::RwLock,
     *,
 };
-use derive_more::{Display, From, Into};
+use derive_more::{Deref, Display, From, Into};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, TimestampSeconds};
+use serde_with::{serde_as, DisplayFromStr, TimestampSeconds, TimestampMilliSeconds, FromInto};
 use std::{net::IpAddr, sync::Arc, u64};
 use tower_cookies::Cookies;
 use uuid::Uuid;
@@ -33,6 +33,19 @@ impl Into<String> for UidKey {
     }
 }
 
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into, Deref)]
+#[display("{}", _0)]
+pub struct UidKeyRaw(
+    #[serde_as(as = "FromInto<i64>")]
+    UidKey);
+
+impl UidKeyRaw {
+    pub fn value(&self) -> &i64 {
+        &self.0.value()
+    }
+}
+
 pub struct LoginParams {
     pub uid: UidKey,
     pub password: String,
@@ -49,7 +62,8 @@ pub trait DerivedFrom {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsrfPayload {
-    pub derived_from: [u8; 16],
+    #[serde(with = "uuid::serde::compact")]
+    pub derived_from: uuid::Uuid,
 
     pub uid: UidKey,
     pub role: i64,
@@ -57,37 +71,69 @@ pub struct CsrfPayload {
 
     #[serde(with = "serialization::ipaddr_bytes")]
     pub login_ip: IpAddr,
-    pub login_at: i64,
-    pub payload_created_at: i64,
+
+    #[serde_as(as = "TimestampMilliSeconds")]
+    pub login_at: DateTime<Utc>,
 }
 
 impl DerivedFrom for CsrfPayload {
     fn get_derived_from(&self) -> Uuid {
-        Uuid::from_bytes(self.derived_from.clone())
+        self.derived_from.clone()
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessPayload {
-    pub derived_from: [u8; 16],
+    #[serde(with = "uuid::serde::compact")]
+    pub derived_from: uuid::Uuid,
 
     pub uid: UidKey,
-    pub payload_created_at: i64,
+    #[serde_as(as = "TimestampMilliSeconds")]
+    pub login_at: DateTime<Utc>,
 }
 
 impl DerivedFrom for AccessPayload {
-    fn get_derived_from(&self) -> Uuid {
-        Uuid::from_bytes(self.derived_from.clone())
+    fn get_derived_from(&self) -> uuid::Uuid {
+        self.derived_from.clone()
     }
 }
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SasRefreshClaims {
-    /// 토큰 고유 ID
-    #[serde(rename = "_id")]
+pub struct SasRefreshmutable {
+    pub failed: usize,
+}
+
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SasRefreshImmutable {
+    /// 발급자
+    pub iss: String,
+    pub role: i64,
+    pub password: String,
+
     #[serde_as(as = "DisplayFromStr")]
+    pub ip: IpAddr,
+
+    #[serde_as(as = "FromChrono04DateTime")]
+    pub created_at: DateTime<Utc>,
+}
+
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SasRefreshClaims {
+    // #[serde(default)]
+    // #[serde(skip)]
+    // #[serde(rename = "_id")]
+    // pub id: Option<ObjectId>,
+
+    /// 토큰 고유 ID
     pub jti: Uuid,
+
+    /// 발급 시간
+    #[serde_as(as = "FromChrono04DateTime")]
+    pub iat: DateTime<Utc>,
 
     /// 토큰의 만료 시간
     #[serde_as(as = "FromChrono04DateTime")]
@@ -114,7 +160,6 @@ pub struct SasRefreshClaims {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasClaimsFrame<T: DerivedFrom + Serialize + DeserializeOwned> {
     /// 토큰 고유 ID
-    #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
     /// 토큰의 만료 시간(jwt는 초단위 지원)
     #[serde_as(as = "TimestampSeconds")]
@@ -479,7 +524,7 @@ impl TokenIssuerImpl {
     /// 로그인 시도 (아이디/비밀번호 검증은 실제 구현 필요)
     pub async fn login(&self, params: LoginParams) -> anyhow::Result<IssuedClaims> {
         let now = Utc::now();
-        let refresh_jti = Uuid::new_v4();
+        let refresh_jti = Uuid::now_v7();
         let refresh_claims = SasRefreshClaims {
             jti: refresh_jti,
             exp: now + self.refresh_ttl,
@@ -493,12 +538,12 @@ impl TokenIssuerImpl {
         };
 
         let access_payload = AccessPayload {
-            derived_from: refresh_jti.into_bytes(),
+            derived_from: refresh_jti,
             uid: params.uid.clone(),
-            payload_created_at: now.timestamp_millis(),
+            login_at: now,
         };
 
-        let access_jti = Uuid::new_v4();
+        let access_jti = Uuid::now_v7();
         let access_claims = SasAccessClaims {
             jti: access_jti,
             exp: now + self.access_ttl,
@@ -506,13 +551,12 @@ impl TokenIssuerImpl {
         };
 
         let user_payload = CsrfPayload {
-            derived_from: access_jti.into_bytes(),
+            derived_from: access_jti,
             uid: params.uid.clone(),
             role: params.role,
             nick: params.nick,
             login_ip: params.login_ip,
-            login_at: now.timestamp_millis(),
-            payload_created_at: now.timestamp_millis(),
+            login_at: now,
         };
 
         let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload).await?;
@@ -584,7 +628,7 @@ impl TokenIssuerImpl {
 
         let now = Utc::now();
 
-        let refresh_jti = Uuid::new_v4();
+        let refresh_jti = Uuid::now_v7();
         let refresh_claims = SasRefreshClaims {
             jti: refresh_jti,
             exp: now + self.refresh_ttl,
@@ -599,19 +643,18 @@ impl TokenIssuerImpl {
         };
 
         let access_payload = AccessPayload {
-            derived_from: refresh_jti.into_bytes(),
+            derived_from: refresh_jti,
             uid: user_payload.uid.clone(),
-            payload_created_at: now.timestamp_millis(),
+            login_at: user_payload.login_at.clone(),
         };
-        let access_jti = Uuid::new_v4();
+        let access_jti = Uuid::now_v7();
         let access_claims = SasAccessClaims {
             jti: access_jti.clone(),
             exp: now + self.access_ttl,
             payload: access_payload,
         };
 
-        user_payload.derived_from = access_jti.into_bytes();
-        user_payload.payload_created_at = now.timestamp_millis();
+        user_payload.derived_from = access_jti;
         let (csrf_token, csrf_dump) = self.generate_csrf_token(&access_claims, user_payload).await?;
         Ok(IssuedClaims {
             refresh_claims,

@@ -60,7 +60,6 @@ bson = { version = "3", features = [
 bitflags = "2"
 rand = { version = "0.9", features = ["std"] }
 url = "2.5"
-uuid = "1"
 
 ta = "0.5.0"
 meval = "0.2"
