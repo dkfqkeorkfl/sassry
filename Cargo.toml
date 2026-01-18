@@ -24,7 +24,8 @@ async-trait = "0.1"
 derive_more = { version = "2", features = ["full"] }
 validator = { version = "0.20", features = ["derive"] }
 
-# tokio stream - tokio-tungstenite를 쓰기 위해서는 rustls에서 ring이나 aws-lc-rs 피쳐를 활성해서 Provider를 설정해야 함
+# tokio-tungstenite를 쓰기 위해서는 rustls에서 ring이나 aws-lc-rs 피쳐를 활성해서 Provider를 설정해야 함
+# tokio-stream, tokio-util는 tokio-tungstenite를 편하게 쓰기 위한 유틸함수 모음
 tokio-tungstenite = { version = "0.28.0", features = [
     "__rustls-tls",
     "handshake",
@@ -37,6 +38,7 @@ tokio-util = { version = "0.7.8", features = ["codec"] }
 axum = { version = "0.8", features = ["form", "json", "tokio", "ws", "macros"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }
+axum-client-ip = "1"
 
 # 타워 라이브러리 - Axum의 미들웨어 설정에 사용
 tower = { version = "0.5", features = ["full"] }

@@ -1,6 +1,7 @@
 use super::error::HttpError;
 use axum::{extract::FromRequestParts, http::HeaderMap};
 use axum_extra::headers::UserAgent;
+use axum_client_ip::ClientIp;
 use bson::{oid::ObjectId, serde_helpers::datetime::FromChrono04DateTime};
 use cassry::{
     base64::Engine,
@@ -14,9 +15,11 @@ use derive_more::{Display, From, Into};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, FromInto, TimestampMilliSeconds, TimestampSeconds};
-use std::{net::IpAddr, sync::Arc, u64};
+use std::{sync::Arc, u64};
 use tower_cookies::{Cookie, Cookies};
 use uuid::Uuid;
+
+use super::ser;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into)]
@@ -34,13 +37,14 @@ impl Into<String> for UidKey {
     }
 }
 
+
 pub struct LoginParams {
     pub uid: UidKey,
     pub password: String,
     pub role: i64,
 
     pub nick: String,
-    pub ip: IpAddr,
+    pub ip: ClientIp,
     pub user_agent: UserAgent,
 }
 
@@ -66,8 +70,8 @@ pub struct SasAccessPayload {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasRefreshmutable {
     pub failed: usize,
-    #[serde_as(as = "DisplayFromStr")]
-    pub ip: IpAddr,
+    #[serde_as(as = "FromInto<ser::DisplayerIP>")]
+    pub ip: ClientIp,
 
     #[serde_as(as = "DisplayFromStr")]
     pub user_agent: UserAgent,
@@ -84,8 +88,8 @@ pub struct SasRefreshImmutable {
     pub role: i64,
     pub password: String,
 
-    #[serde_as(as = "DisplayFromStr")]
-    pub origin_ip: IpAddr,
+    #[serde_as(as = "FromInto<ser::DisplayerIP>")]
+    pub origin_ip: ClientIp,
     #[serde_as(as = "DisplayFromStr")]
     pub origin_user_agent: UserAgent,
 
@@ -540,8 +544,8 @@ impl TokenIssuerImpl {
         &self,
         prev_refresh_clams: SasRefreshClaims,
         prev_payload: &Arc<SasAccessPayload>,
-        ip: &IpAddr,
-        user_agent: &UserAgent,
+        client_ip: ClientIp,
+        user_agent: UserAgent,
     ) -> anyhow::Result<IssuedClaims> {
         if prev_refresh_clams.sub != prev_payload.uid
             || prev_payload.derived_from != prev_refresh_clams.jti
@@ -566,8 +570,8 @@ impl TokenIssuerImpl {
             immutable: prev_refresh_clams.immutable.clone(),
             mutable: SasRefreshmutable {
                 failed: 0,
-                ip: ip.clone(),
-                user_agent: user_agent.clone(),
+                ip: client_ip,
+                user_agent: user_agent,
                 updated_at: now,
             }
             .into(),
@@ -649,11 +653,11 @@ impl TokenIssuer {
         &self,
         prev_refresh_clams: SasRefreshClaims,
         prev_payload: &Arc<SasAccessPayload>,
-        ip: &IpAddr,
-        user_agent: &UserAgent,
+        client_ip: ClientIp,
+        user_agent: UserAgent,
     ) -> anyhow::Result<IssuedClaims> {
         self.isser
-            .refresh_access_token(prev_refresh_clams, prev_payload, ip, user_agent)
+            .refresh_access_token(prev_refresh_clams, prev_payload, client_ip, user_agent)
             .await
     }
 
