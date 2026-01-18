@@ -92,6 +92,16 @@ pub enum HttpError {
     #[value(1003)]
     #[error("JWT expired")]
     ExpiredJwt,
+
+    #[status(401)]
+    #[value(1004)]
+    #[error("Missing CSRF token in headers")]
+    MissingCsrfToken,
+
+    #[status(401)]
+    #[value(1005)]
+    #[error("Invalid CSRF token")]
+    InvalidCsrfToken,
 }
 
 impl axum::response::IntoResponse for HttpError {

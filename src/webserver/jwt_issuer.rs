@@ -15,7 +15,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, FromInto, TimestampMilliSeconds, TimestampSeconds};
 use std::{net::IpAddr, sync::Arc, u64};
-use tower_cookies::Cookies;
+use tower_cookies::{Cookie, Cookies};
 use uuid::Uuid;
 
 #[serde_as]
@@ -55,21 +55,6 @@ pub struct CsrfPayload {
     pub role: i64,
     pub nick: String,
 
-    #[serde_as(as = "TimestampMilliSeconds")]
-    pub login_at: DateTime<Utc>,
-
-    #[serde_as(as = "TimestampMilliSeconds")]
-    pub origin_at: DateTime<Utc>,
-}
-
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccessPayload {
-    #[serde(with = "uuid::serde::compact")]
-    pub derived_from: uuid::Uuid,
-
-    #[serde_as(as = "FromInto<i64>")]
-    pub uid: UidKey,
     #[serde_as(as = "TimestampMilliSeconds")]
     pub login_at: DateTime<Utc>,
 
@@ -144,6 +129,10 @@ pub struct SasRefreshClaims {
     pub mutable: Option<SasRefreshmutable>,
 }
 
+pub trait CsrfKeyProvider {
+    fn csrf_origin(&self) -> &[u8];
+}
+
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasClaimsFrame<T: Serialize + DeserializeOwned> {
@@ -158,8 +147,13 @@ pub struct SasClaimsFrame<T: Serialize + DeserializeOwned> {
     pub payload: Arc<T>,
 }
 
-pub type SasAccessClaims = SasClaimsFrame<AccessPayload>;
-pub type SasCsrfClaims = SasClaimsFrame<CsrfPayload>;
+pub type SasAccessClaims = SasClaimsFrame<CsrfPayload>;
+
+impl CsrfKeyProvider for SasAccessClaims {
+    fn csrf_origin(&self) -> &[u8] {
+        self.jti.as_bytes()
+    }
+}
 
 impl<S> FromRequestParts<S> for SasAccessClaims
 where
@@ -184,7 +178,7 @@ where
             let mut validation = Validation::default();
             validation.validate_exp = false;
             let claims = jwt_manager
-                .extract_access_claims_from(cookies, Some(validation))
+                .extract_access_claims_with_csrf_headers(cookies, &parts.headers, Some(validation))
                 .await?;
             if chrono::Utc::now() > claims.exp {
                 return Err(HttpError::ExpiredJwt);
@@ -195,53 +189,61 @@ where
     }
 }
 
-impl<S> FromRequestParts<S> for SasCsrfClaims
-where
-    S: Send + Sync,
-{
-    type Rejection = HttpError;
+fn build_access_cookie(token: String, ttl: &chrono::Duration) -> anyhow::Result<Cookie<'static>> {
+    let date = Utc::now() + *ttl;
+    let expires =
+        tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(date.timestamp())?;
+    Ok(Cookie::build((TokenIssuer::get_cookie_name(), token))
+        .expires(expires)
+        .same_site(tower_cookies::cookie::SameSite::Lax)
+        .secure(true)
+        .http_only(true)
+        .path("/")
+        .build())
+}
 
-    fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
-        async move {
-            let cookies = parts
-                .extensions
-                .get::<tower_cookies::Cookies>()
-                .ok_or(HttpError::MissingJwtToken)?;
-            let jwt_manager = parts
-                .extensions
-                .get::<TokenIssuer>()
-                .ok_or(anyhow::anyhow!("JwtManager not found"))?;
+fn build_csrf_cookie(token: String, ttl: &chrono::Duration) -> anyhow::Result<Cookie<'static>> {
+    let date = Utc::now() + *ttl;
+    let expires =
+        tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(date.timestamp())?;
+    Ok(Cookie::build((TokenIssuer::get_csrf_cookie_name(), token))
+        .expires(expires)
+        .same_site(tower_cookies::cookie::SameSite::Lax)
+        .secure(true)
+        .http_only(false)
+        .path("/")
+        .build())
+}
 
-            let mut validation = Validation::default();
-            validation.validate_exp = false;
-            let claims_pair = jwt_manager
-                .extract_claims_pair_from(cookies, &parts.headers, Some(validation))
-                .await?;
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CsrfToken(#[serde(with = "serialization::postcard_base64")] pub Vec<u8>);
 
-            // 만료 시간 확인
-            if chrono::Utc::now() > claims_pair.csrf_claims.exp {
-                return Err(HttpError::ExpiredJwt);
-            }
+impl CsrfToken {
+    pub fn verify(&self, csrf: &str) -> bool {
+        serde_json::from_str::<CsrfToken>(csrf)
+            .map(|token| token == *self)
+            .unwrap_or(false)
+    }
 
-            Ok(claims_pair.csrf_claims)
-        }
+    pub fn to_string(&self) -> anyhow::Result<String> {
+        serde_json::to_string(self).map_err(anyhow::Error::from)
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct IssuedClaims {
     pub refresh_claims: SasRefreshClaims,
-    pub access_token: String,
-    pub csrf_token: String,
-    pub csrf_dump: String,
+    pub access_cookie: Cookie<'static>,
+    pub csrf_cookie: Cookie<'static>,
 }
 
-pub struct ClaimsPair {
-    pub access_claims: SasAccessClaims,
-    pub csrf_claims: SasCsrfClaims,
+impl IssuedClaims {
+    pub fn apply_to_cookies(self, cookies: &Cookies) -> SasRefreshClaims {
+        cookies.add(self.access_cookie);
+        cookies.add(self.csrf_cookie);
+        self.refresh_claims
+    }
 }
 
 pub struct KyInfo {
@@ -299,67 +301,28 @@ impl JwtIssuer {
             .map(|x| (locked.clone(), x))
     }
 
-    pub async fn generate_jwt_with_nonce<T: Serialize>(
+    pub async fn generate_jwt<T: Serialize + CsrfKeyProvider>(
         &self,
         claims: &T,
-        nonce: &[u8],
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, CsrfToken)> {
         let (key, info) = self
             .get_key()
             .await
             .ok_or(anyhow::anyhow!("Key not found"))?;
         let mut header = jsonwebtoken::Header::default();
         header.kid = Some(key);
-
-        let mut hasher = blake3::Hasher::new_keyed(&info.secret.expose_secret().try_into()?);
-        hasher.update(nonce);
-        let hash = hasher.finalize();
-
-        jsonwebtoken::encode(&header, claims, &EncodingKey::from_secret(hash.as_bytes()))
-            .map_err(anyhow::Error::from)
-    }
-
-    pub async fn verify_with_nonce<T: DeserializeOwned>(
-        &self,
-        token: &str,
-        nonce: &[u8],
-        validation: Option<Validation>,
-    ) -> anyhow::Result<T> {
-        let kid = jsonwebtoken::decode_header(token)?
-            .kid
-            .ok_or(anyhow::anyhow!("Key not found"))?;
-        let info = self
-            .keys
-            .get(&kid)
-            .await
-            .ok_or(anyhow::anyhow!("Key not found"))?;
-
-        let mut hasher = blake3::Hasher::new_keyed(&info.secret.expose_secret().try_into()?);
-        hasher.update(nonce);
-        let hash = hasher.finalize();
-
-        jsonwebtoken::decode::<T>(
-            token,
-            &DecodingKey::from_secret(hash.as_bytes()),
-            &validation.unwrap_or_default(),
-        )
-        .map(|token_data| token_data.claims)
-        .map_err(anyhow::Error::from)
-    }
-
-    pub async fn generate_jwt<T: Serialize>(&self, claims: &T) -> anyhow::Result<String> {
-        let (key, info) = self
-            .get_key()
-            .await
-            .ok_or(anyhow::anyhow!("Key not found"))?;
-        let mut header = jsonwebtoken::Header::default();
-        header.kid = Some(key);
-        jsonwebtoken::encode(
+        let jwt = jsonwebtoken::encode(
             &header,
             claims,
             &EncodingKey::from_secret(info.secret.expose_secret()),
         )
-        .map_err(anyhow::Error::from)
+        .map_err(anyhow::Error::from)?;
+
+        let mut hasher = blake3::Hasher::new_keyed(&info.secret.expose_secret().try_into()?);
+        hasher.update(claims.csrf_origin());
+        let hash = hasher.finalize();
+        let csrf = CsrfToken(hash.as_bytes().to_vec());
+        Ok((jwt, csrf))
     }
 
     pub async fn verify<T: DeserializeOwned>(
@@ -369,7 +332,7 @@ impl JwtIssuer {
     ) -> anyhow::Result<T> {
         let kid = jsonwebtoken::decode_header(token)?
             .kid
-            .ok_or(anyhow::anyhow!("Key not found"))?;
+            .ok_or(anyhow::anyhow!("Kid not found"))?;
         let info = self
             .keys
             .get(&kid)
@@ -384,22 +347,54 @@ impl JwtIssuer {
         .map(|token_data| token_data.claims)
         .map_err(anyhow::Error::from)
     }
+
+    pub async fn verify_with_csrf<T: DeserializeOwned + CsrfKeyProvider>(
+        &self,
+        token: &str,
+        csrf: &str,
+        validation: Option<Validation>,
+    ) -> anyhow::Result<T> {
+        let kid = jsonwebtoken::decode_header(token)?
+            .kid
+            .ok_or(anyhow::anyhow!("Kid not found"))?;
+        let info = self
+            .keys
+            .get(&kid)
+            .await
+            .ok_or(anyhow::anyhow!("Key not found"))?;
+
+        let claims = jsonwebtoken::decode::<T>(
+            token,
+            &DecodingKey::from_secret(info.secret.expose_secret()),
+            &validation.unwrap_or_default(),
+        )
+        .map(|token_data| token_data.claims)
+        .map_err(anyhow::Error::from)?;
+
+        let mut hasher = blake3::Hasher::new_keyed(&info.secret.expose_secret().try_into()?);
+        hasher.update(claims.csrf_origin());
+        let hash = hasher.finalize();
+        let helper = CsrfToken(hash.as_bytes().to_vec());
+        if !helper.verify(csrf) {
+            return Err(anyhow::anyhow!("Invalid CSRF token"));
+        }
+
+        Ok(claims)
+    }
 }
 
 pub struct TokenIssuerImpl {
     name: String,
     access_isser: JwtIssuer,
-    csrf_isser: JwtIssuer,
 
-    csrf_dump_key: SecretString,
     access_ttl: chrono::Duration,
     refresh_ttl: chrono::Duration,
+    csrf_ttl: chrono::Duration,
     blocked_refreshs: Cache<Uuid, ()>,
 }
 
 impl TokenIssuerImpl {
     pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
-        self.csrf_isser.insert_key(key, origin).await?;
         self.access_isser.insert_key(key, origin).await
     }
 
@@ -423,30 +418,13 @@ impl TokenIssuerImpl {
         self.blocked_refreshs.contains_key(jti)
     }
 
-    pub fn generate_dump_nonce(
-        &self,
-        access_claims: &SasAccessClaims,
-        addr: &IpAddr,
-    ) -> anyhow::Result<Vec<u8>> {
-        let addr = postcard::to_stdvec(addr)?;
-        let bytes = [access_claims.jti.as_bytes(), addr.as_slice()].concat();
-        let nonce = util::hmac_blake3_with_len(
-            self.csrf_dump_key.expose_secret().as_bytes().try_into()?,
-            bytes.as_slice(),
-            12,
-        )?;
-
-        Ok(nonce)
-    }
-
     /// 새로운 JwtManager 인스턴스 생성
     pub fn new(
         name: String,
         access_secret: SecretString,
-        csrf_secret: SecretString,
-        csrf_dump_key: SecretString,
         access_ttl: chrono::Duration,
         refresh_ttl: chrono::Duration,
+        session_timeout: chrono::Duration,
     ) -> Self {
         Self {
             name,
@@ -459,18 +437,9 @@ impl TokenIssuerImpl {
                     .build(),
                 main: RwLock::new(String::new()),
             },
-            csrf_isser: JwtIssuer {
-                secret: csrf_secret,
-                keys: moka::future::CacheBuilder::new(u64::MAX)
-                    .time_to_live(std::time::Duration::from_secs(
-                        refresh_ttl.num_seconds() as u64
-                    ))
-                    .build(),
-                main: RwLock::new(String::new()),
-            },
-            csrf_dump_key,
             access_ttl,
             refresh_ttl,
+            csrf_ttl: access_ttl + session_timeout,
             blocked_refreshs: moka::future::CacheBuilder::new(u64::MAX)
                 .time_to_live(std::time::Duration::from_secs(
                     access_ttl.num_seconds() as u64
@@ -495,40 +464,36 @@ impl TokenIssuerImpl {
             })
     }
 
-    pub async fn verify_jwt_csrf(
-        &self,
-        access_claims: &SasAccessClaims,
-        csrf_token: &str,
-        validation: Option<Validation>,
-    ) -> anyhow::Result<SasCsrfClaims> {
-        self.csrf_isser
-            .verify_with_nonce::<SasCsrfClaims>(
-                csrf_token,
-                access_claims.jti.as_bytes(),
-                validation,
-            )
-            .await
-    }
-
-    /// JWT 토큰 검증 (유효성, 만료 등)
-    pub async fn verify_jwt_pair(
+    pub async fn verify_jwt_access_with_csrf(
         &self,
         access_token: &str,
-        csrf_token: &str,
+        csrf: &str,
         validation: Option<Validation>,
-    ) -> anyhow::Result<ClaimsPair> {
-        let access_claims = self
-            .verify_jwt_access(access_token, validation.clone())
-            .await?;
-        let csrf_claims = self
-            .verify_jwt_csrf(&access_claims, csrf_token, validation)
-            .await?;
-        if self.contains_block(&access_claims.jti) {
-            return Err(anyhow::anyhow!("Invalid access token"));
-        }
-        Ok(ClaimsPair {
-            access_claims,
-            csrf_claims,
+    ) -> anyhow::Result<SasAccessClaims> {
+        self.access_isser
+            .verify_with_csrf::<SasAccessClaims>(access_token, csrf, validation)
+            .await
+            .and_then(|claims| {
+                if self.contains_block(&claims.payload.derived_from) {
+                    return Err(anyhow::anyhow!("Blocked refresh token"));
+                }
+                Ok(claims)
+            })
+    }
+
+    pub async fn generate_tokens(
+        &self,
+        refresh_claims: SasRefreshClaims,
+        access_claims: SasAccessClaims,
+    ) -> anyhow::Result<IssuedClaims> {
+        let (access_token, csrf) = self.access_isser.generate_jwt(&access_claims).await?;
+        let access_cookie = build_access_cookie(access_token, &self.refresh_ttl)?;
+
+        let csrf_cookie = build_csrf_cookie(csrf.to_string()?, &self.csrf_ttl)?;
+        Ok(IssuedClaims {
+            refresh_claims,
+            access_cookie,
+            csrf_cookie,
         })
     }
 
@@ -555,19 +520,6 @@ impl TokenIssuerImpl {
             mutable: None,
         };
 
-        let access_payload = AccessPayload {
-            derived_from: refresh_jti,
-            uid: params.uid.clone(),
-            login_at: now,
-            origin_at: now,
-        };
-
-        let access_claims = SasAccessClaims {
-            jti: Uuid::now_v7(),
-            exp: now + self.access_ttl,
-            payload: access_payload.into(),
-        };
-
         let user_payload = CsrfPayload {
             derived_from: refresh_jti,
             uid: params.uid.clone(),
@@ -577,64 +529,13 @@ impl TokenIssuerImpl {
             login_at: now,
         };
 
-        let (csrf_token, csrf_dump) = self
-            .generate_csrf_token(&access_claims, user_payload, &params.ip)
-            .await?;
-        Ok(IssuedClaims {
-            refresh_claims,
-            access_token: self.access_isser.generate_jwt(&access_claims).await?,
-            csrf_token,
-            csrf_dump,
-        })
-    }
-
-    pub fn decrypt_csrf_dump(
-        &self,
-        access_claims: &SasAccessClaims,
-        addr: &IpAddr,
-        csrf_dump: &str,
-    ) -> anyhow::Result<String> {
-        let nonce = self.generate_dump_nonce(access_claims, addr)?;
-        let encrypted = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(csrf_dump)?;
-        let decrypted = util::decrypt_str_by_aes_gcm_128(
-            access_claims.jti.as_bytes().try_into()?,
-            nonce.as_slice().try_into()?,
-            encrypted,
-        )?;
-
-        Ok(decrypted.expose_secret().to_string())
-    }
-
-    pub async fn generate_csrf_token(
-        &self,
-        access_claims: &SasAccessClaims,
-        user_payload: CsrfPayload,
-        ip: &IpAddr,
-    ) -> anyhow::Result<(String, String)> {
-        // 추후 csrf key로 dump_nonce 생성필요 - 로테이션을 위함
-        let csrf_claims = SasCsrfClaims {
+        let access_claims = SasAccessClaims {
             jti: Uuid::now_v7(),
-            exp: access_claims.exp,
+            exp: now + self.access_ttl,
             payload: user_payload.into(),
         };
 
-        // access claims의 jti를 사용하여 csrf token 생성. 즉, access token가 없으면 verify 불가
-        // dump는 새로 고침을 위한 유틸리티이므로 ip를 통하여 보다 강력하게 제약을 둠.
-        let csrf_token = self
-            .csrf_isser
-            .generate_jwt_with_nonce(&csrf_claims, access_claims.jti.as_bytes())
-            .await?;
-        // ip를 사용하여 csrf dump 생성. 즉, ip가 같지 않으면 verify 불가
-        let nonce = self.generate_dump_nonce(access_claims, ip)?;
-        let encrypted = util::encrypt_str_by_aes_gcm_128(
-            access_claims.jti.as_bytes().try_into()?,
-            nonce.as_slice().try_into()?,
-            &csrf_token,
-        )?;
-        Ok((
-            csrf_token,
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&encrypted),
-        ))
+        self.generate_tokens(refresh_claims, access_claims).await
     }
 
     pub async fn refresh_access_token(
@@ -674,29 +575,15 @@ impl TokenIssuerImpl {
             .into(),
         };
 
-        let access_payload = AccessPayload {
-            derived_from: refresh_jti,
-            uid: prev_payload.uid.clone(),
-            login_at: prev_payload.login_at.clone(),
-            origin_at: prev_payload.origin_at.clone(),
-        };
+        let mut user_payload = prev_payload.as_ref().clone();
+        user_payload.derived_from = refresh_jti;
         let access_claims = SasAccessClaims {
             jti: Uuid::now_v7(),
             exp: now + self.access_ttl,
-            payload: access_payload.into(),
+            payload: user_payload.into(),
         };
 
-        let mut user_payload = prev_payload.as_ref().clone();
-        user_payload.derived_from = refresh_jti;
-        let (csrf_token, csrf_dump) = self
-            .generate_csrf_token(&access_claims, user_payload, ip)
-            .await?;
-        Ok(IssuedClaims {
-            refresh_claims,
-            access_token: self.access_isser.generate_jwt(&access_claims).await?,
-            csrf_token,
-            csrf_dump,
-        })
+        self.generate_tokens(refresh_claims, access_claims).await
     }
 }
 
@@ -722,8 +609,8 @@ impl TokenIssuer {
         "access"
     }
 
-    pub const fn get_session_sub_name() -> &'static str {
-        "sub"
+    pub const fn get_csrf_cookie_name() -> &'static str {
+        "sas-csrf"
     }
 
     pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
@@ -742,20 +629,18 @@ impl TokenIssuer {
     pub fn new(
         name: String,
         access_secret: SecretString,
-        csrf_secret: SecretString,
-        csrf_dump_key: SecretString,
         access_ttl: chrono::Duration,
         refresh_ttl: chrono::Duration,
+        session_timeout: chrono::Duration,
     ) -> Self {
         Self {
             isser: Arc::new(
                 TokenIssuerImpl::new(
                     name,
                     access_secret,
-                    csrf_secret,
-                    csrf_dump_key,
                     access_ttl,
                     refresh_ttl,
+                    session_timeout,
                 )
                 .into(),
             ),
@@ -779,18 +664,7 @@ impl TokenIssuer {
             .await
     }
 
-    pub async fn verify_jwt_csrf(
-        &self,
-        access_claims: &SasAccessClaims,
-        csrf_token: &str,
-        validation: Option<Validation>,
-    ) -> anyhow::Result<SasCsrfClaims> {
-        self.isser
-            .verify_jwt_csrf(access_claims, csrf_token, validation)
-            .await
-    }
-
-    pub async fn extract_access_claims_from(
+    pub async fn extract_access_claims(
         &self,
         cookies: &Cookies,
         validation: Option<Validation>,
@@ -806,48 +680,94 @@ impl TokenIssuer {
         Ok(access_claims)
     }
 
-    pub async fn extract_claims_pair_from_bearer(
+    pub async fn extract_access_claims_with_csrf(
         &self,
         cookies: &Cookies,
-        csrf_token: &str,
+        csrf: &str,
         validation: Option<Validation>,
-    ) -> Result<ClaimsPair, HttpError> {
+    ) -> Result<SasAccessClaims, HttpError> {
         let access_token = cookies
             .get(TokenIssuer::get_cookie_name())
             .ok_or(HttpError::MissingJwtToken)?;
-
-        self.isser
-            .verify_jwt_pair(access_token.value(), csrf_token, validation)
+        let access_claims = self
+            .isser
+            .verify_jwt_access_with_csrf(access_token.value(), csrf, validation)
             .await
-            .map_err(|e| HttpError::InvalidJwt(e))
+            .map_err(|e| HttpError::InvalidJwt(e))?;
+        Ok(access_claims)
     }
 
-    pub async fn extract_claims_pair_from(
+    pub async fn is_valid_csrf_headers<'a>(
+        &self,
+        cookies: &'a Cookies,
+        headers: &'a HeaderMap,
+    ) -> Result<Cookie<'a>, HttpError> {
+        let csrf_token_from_header = headers
+            .get("X-CSRF-Token")
+            .and_then(|header| header.to_str().ok())
+            .ok_or(HttpError::MissingCsrfToken)?;
+
+        self.is_valid_csrf_str(cookies, csrf_token_from_header)
+            .await
+    }
+
+    pub async fn is_valid_csrf_str<'a>(
+        &self,
+        cookies: &'a Cookies,
+        csrf_token: &'a str,
+    ) -> Result<Cookie<'a>, HttpError> {
+        let csrf_token_from_cookie = cookies
+            .get(TokenIssuer::get_csrf_cookie_name())
+            .ok_or(HttpError::MissingCsrfToken)?;
+
+        if csrf_token_from_cookie.value() != csrf_token {
+            return Err(HttpError::InvalidCsrfToken);
+        }
+
+        Ok(csrf_token_from_cookie)
+    }
+
+    pub async fn extract_access_claims_with_csrf_headers(
         &self,
         cookies: &Cookies,
         headers: &HeaderMap,
         validation: Option<Validation>,
-    ) -> Result<ClaimsPair, HttpError> {
-        let authorization = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|header| header.to_str().ok())
-            .ok_or(HttpError::MissingJwtToken)?;
-        let csrf_token = authorization
-            .strip_prefix("Bearer ")
-            .ok_or(HttpError::InvalidJwt(anyhow::anyhow!(
-                "Invalid Authorization header format"
-            )))?;
+    ) -> Result<SasAccessClaims, HttpError> {
+        let cookie = self.is_valid_csrf_headers(cookies, headers).await?;
 
-        self.extract_claims_pair_from_bearer(cookies, csrf_token, validation)
+        self.extract_access_claims_with_csrf(cookies, cookie.value(), validation)
             .await
     }
 
-    pub async fn decrypt_csrf_dump(
+    pub async fn extract_access_claims_with_csrf_str(
         &self,
-        access_claims: &SasAccessClaims,
-        addr: &IpAddr,
-        csrf_dump: &str,
-    ) -> anyhow::Result<String> {
-        self.isser.decrypt_csrf_dump(access_claims, addr, csrf_dump)
+        cookies: &Cookies,
+        csrf_token: &str,
+        validation: Option<Validation>,
+    ) -> Result<SasAccessClaims, HttpError> {
+        let cookie = self.is_valid_csrf_str(cookies, csrf_token).await?;
+
+        self.extract_access_claims_with_csrf(cookies, cookie.value(), validation)
+            .await
+    }
+
+    pub fn remove_cookies(cookies: &Cookies) {
+        let access = Cookie::build((TokenIssuer::get_cookie_name(), ""))
+            .expires(tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(0).unwrap())
+            .same_site(tower_cookies::cookie::SameSite::Lax)
+            .secure(true)
+            .http_only(true)
+            .path("/")
+            .build();
+
+        let csrf = Cookie::build((TokenIssuer::get_csrf_cookie_name(), ""))
+            .expires(tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(0).unwrap())
+            .same_site(tower_cookies::cookie::SameSite::Lax)
+            .secure(true)
+            .http_only(false)
+            .path("/")
+            .build();
+        cookies.remove(access);
+        cookies.remove(csrf);
     }
 }
