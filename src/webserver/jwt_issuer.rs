@@ -46,7 +46,7 @@ pub struct LoginParams {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CsrfPayload {
+pub struct SasAccessPayload {
     #[serde(with = "uuid::serde::compact")]
     pub derived_from: uuid::Uuid,
 
@@ -135,7 +135,7 @@ pub trait CsrfKeyProvider {
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SasClaimsFrame<T: Serialize + DeserializeOwned> {
+pub struct SasAccessClaims {
     /// 토큰 고유 ID
     #[serde_as(as = "DisplayFromStr")]
     pub jti: Uuid,
@@ -144,10 +144,8 @@ pub struct SasClaimsFrame<T: Serialize + DeserializeOwned> {
     pub exp: DateTime<Utc>,
 
     #[serde(with = "serialization::postcard_base64")]
-    pub payload: Arc<T>,
+    pub payload: Arc<SasAccessPayload>,
 }
-
-pub type SasAccessClaims = SasClaimsFrame<CsrfPayload>;
 
 impl CsrfKeyProvider for SasAccessClaims {
     fn csrf_origin(&self) -> &[u8] {
@@ -193,7 +191,7 @@ fn build_access_cookie(token: String, ttl: &chrono::Duration) -> anyhow::Result<
     let date = Utc::now() + *ttl;
     let expires =
         tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(date.timestamp())?;
-    Ok(Cookie::build((TokenIssuer::get_cookie_name(), token))
+    Ok(Cookie::build((TokenIssuer::ACCESS_COOKIE_NAME, token))
         .expires(expires)
         .same_site(tower_cookies::cookie::SameSite::Lax)
         .secure(true)
@@ -206,7 +204,7 @@ fn build_csrf_cookie(token: String, ttl: &chrono::Duration) -> anyhow::Result<Co
     let date = Utc::now() + *ttl;
     let expires =
         tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(date.timestamp())?;
-    Ok(Cookie::build((TokenIssuer::get_csrf_cookie_name(), token))
+    Ok(Cookie::build((TokenIssuer::CSRF_COOKIE_NAME, token))
         .expires(expires)
         .same_site(tower_cookies::cookie::SameSite::Lax)
         .secure(true)
@@ -520,7 +518,7 @@ impl TokenIssuerImpl {
             mutable: None,
         };
 
-        let user_payload = CsrfPayload {
+        let user_payload = SasAccessPayload {
             derived_from: refresh_jti,
             uid: params.uid.clone(),
             role: params.role,
@@ -541,7 +539,7 @@ impl TokenIssuerImpl {
     pub async fn refresh_access_token(
         &self,
         prev_refresh_clams: SasRefreshClaims,
-        prev_payload: &Arc<CsrfPayload>,
+        prev_payload: &Arc<SasAccessPayload>,
         ip: &IpAddr,
         user_agent: &UserAgent,
     ) -> anyhow::Result<IssuedClaims> {
@@ -593,6 +591,9 @@ pub struct TokenIssuer {
 }
 
 impl TokenIssuer {
+    pub const ACCESS_COOKIE_NAME: &'static str = "access";
+    pub const CSRF_COOKIE_NAME: &'static str = "sas-csrf";
+
     pub async fn get_name(&self) -> String {
         self.isser.get_name().clone()
     }
@@ -603,14 +604,6 @@ impl TokenIssuer {
 
     pub async fn get_refresh_ttl(&self) -> chrono::Duration {
         self.isser.get_refresh_ttl().clone()
-    }
-
-    pub const fn get_cookie_name() -> &'static str {
-        "access"
-    }
-
-    pub const fn get_csrf_cookie_name() -> &'static str {
-        "sas-csrf"
     }
 
     pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
@@ -655,7 +648,7 @@ impl TokenIssuer {
     pub async fn refresh_access_token(
         &self,
         prev_refresh_clams: SasRefreshClaims,
-        prev_payload: &Arc<CsrfPayload>,
+        prev_payload: &Arc<SasAccessPayload>,
         ip: &IpAddr,
         user_agent: &UserAgent,
     ) -> anyhow::Result<IssuedClaims> {
@@ -670,7 +663,7 @@ impl TokenIssuer {
         validation: Option<Validation>,
     ) -> Result<SasAccessClaims, HttpError> {
         let access_token = cookies
-            .get(TokenIssuer::get_cookie_name())
+            .get(TokenIssuer::ACCESS_COOKIE_NAME)
             .ok_or(HttpError::MissingJwtToken)?;
         let access_claims = self
             .isser
@@ -687,7 +680,7 @@ impl TokenIssuer {
         validation: Option<Validation>,
     ) -> Result<SasAccessClaims, HttpError> {
         let access_token = cookies
-            .get(TokenIssuer::get_cookie_name())
+            .get(TokenIssuer::ACCESS_COOKIE_NAME)
             .ok_or(HttpError::MissingJwtToken)?;
         let access_claims = self
             .isser
@@ -700,7 +693,7 @@ impl TokenIssuer {
     pub async fn is_valid_csrf_headers<'a>(
         &self,
         cookies: &'a Cookies,
-        headers: &'a HeaderMap,
+        headers: &HeaderMap,
     ) -> Result<Cookie<'a>, HttpError> {
         let csrf_token_from_header = headers
             .get("X-CSRF-Token")
@@ -714,10 +707,10 @@ impl TokenIssuer {
     pub async fn is_valid_csrf_str<'a>(
         &self,
         cookies: &'a Cookies,
-        csrf_token: &'a str,
+        csrf_token: &str,
     ) -> Result<Cookie<'a>, HttpError> {
         let csrf_token_from_cookie = cookies
-            .get(TokenIssuer::get_csrf_cookie_name())
+            .get(TokenIssuer::CSRF_COOKIE_NAME)
             .ok_or(HttpError::MissingCsrfToken)?;
 
         if csrf_token_from_cookie.value() != csrf_token {
@@ -752,7 +745,7 @@ impl TokenIssuer {
     }
 
     pub fn remove_cookies(cookies: &Cookies) {
-        let access = Cookie::build((TokenIssuer::get_cookie_name(), ""))
+        let access = Cookie::build((TokenIssuer::ACCESS_COOKIE_NAME, ""))
             .expires(tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(0).unwrap())
             .same_site(tower_cookies::cookie::SameSite::Lax)
             .secure(true)
@@ -760,7 +753,7 @@ impl TokenIssuer {
             .path("/")
             .build();
 
-        let csrf = Cookie::build((TokenIssuer::get_csrf_cookie_name(), ""))
+        let csrf = Cookie::build((TokenIssuer::CSRF_COOKIE_NAME, ""))
             .expires(tower_cookies::cookie::time::OffsetDateTime::from_unix_timestamp(0).unwrap())
             .same_site(tower_cookies::cookie::SameSite::Lax)
             .secure(true)
