@@ -1,4 +1,4 @@
-use axum::{Json, extract::{FromRequest, Request}, http::StatusCode};
+use axum::{Json, extract::{FromRequest, Query, Request}, http::StatusCode};
 use cassry::*;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
@@ -14,6 +14,11 @@ pub enum HttpError {
 
     #[status(400)]
     #[value(2)]
+    #[error("{0}")]
+    QueryParseError(#[from] axum::extract::rejection::QueryRejection),
+
+    #[status(400)]
+    #[value(3)]
     #[error("{0}")]
     ValidationError(#[from] validator::ValidationErrors),
 
@@ -137,5 +142,21 @@ where
         let Json(value) = Json::<T>::from_request(req, state).await?;
         value.validate()?;
         Ok(ValidatedJson(value))
+    }
+}
+
+pub struct ValidatedQuery<T>(pub T);
+
+impl<S, T> FromRequest<S> for ValidatedQuery<T>
+where
+    T: DeserializeOwned + Validate,
+    S: Send + Sync,
+{
+    type Rejection = HttpError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Query(value) = Query::<T>::from_request(req, state).await?;
+        value.validate()?;
+        Ok(ValidatedQuery(value))
     }
 }
