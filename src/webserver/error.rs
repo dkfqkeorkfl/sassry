@@ -1,8 +1,9 @@
 use axum::{Json, extract::{FromRequest, Query, Request}, http::StatusCode};
 use cassry::*;
-use serde::de::DeserializeOwned;
+use derive_more::From;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
-use validator::Validate;
+use validator::{Validate, ValidationErrors};
 /// HTTP status code별 대표적인 에러 타입들
 #[derive(Debug, Error, cassry_derive::ErrCode)]
 pub enum HttpError {
@@ -20,7 +21,7 @@ pub enum HttpError {
     #[status(400)]
     #[value(3)]
     #[error("{0}")]
-    ValidationError(#[from] validator::ValidationErrors),
+    ValidationError(#[from] ValidationErrorRes),
 
     /// 400 Bad Request - 잘못된 요청
     #[status(400)]
@@ -129,6 +130,15 @@ impl axum::response::IntoResponse for HttpError {
     }
 }
 
+#[derive(Debug, Error, Serialize, Deserialize, From)]
+pub struct ValidationErrorRes(pub ValidationErrors);
+
+impl std::fmt::Display for ValidationErrorRes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.errors().keys().map(|k| &**k).collect::<Vec<_>>().join(", "))
+    }
+}
+
 pub struct ValidatedJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for ValidatedJson<T>
@@ -140,7 +150,7 @@ where
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let Json(value) = Json::<T>::from_request(req, state).await?;
-        value.validate()?;
+        value.validate().map_err(ValidationErrorRes::from)?;
         Ok(ValidatedJson(value))
     }
 }
@@ -156,7 +166,7 @@ where
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let Query(value) = Query::<T>::from_request(req, state).await?;
-        value.validate()?;
+        value.validate().map_err(ValidationErrorRes::from)?;
         Ok(ValidatedQuery(value))
     }
 }
