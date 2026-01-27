@@ -395,11 +395,13 @@ impl exchange::RestApiTrait for RestAPI {
                             util::datetime_epoch_first().into(),
                             MarketVal::Pointer(market.clone()),
                         );
+                        
+                        for order_id in caps[1].split(",") {
+                            let mut order = Order::from_order_param(param);
+                            order.oid = order_id.to_string();
+                            os.insert_raw(order);    
+                        }
 
-                        let order_id = &caps[1];
-                        let mut order = Order::from_order_param(param);
-                        order.oid = order_id.to_string();
-                        os.insert_raw(order);
                         self.request_order_cancel(context, &os).await?;
                     }
 
