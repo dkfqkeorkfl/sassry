@@ -719,7 +719,6 @@ impl exchange::RestApiTrait for RestAPI {
                 })
                 .ok_or(anyhowln!("invalid market response format"))?;
 
-            symbols.push("KRW-APM".to_string());
             symbols
         };
 
@@ -744,7 +743,7 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut markets = DataSet::<Market, MarketID>::default();
+        let mut markets = MarketSetBuilder::default();
         for result in bodies {
             let (root, packet) = result?;
 
@@ -809,12 +808,10 @@ impl exchange::RestApiTrait for RestAPI {
                 detail: root,
             };
 
-            let delegate_id = market_id.from_symbol(format!("{}/{}", market.base_currency, market.quote_currency));
-            markets.insert_raw(delegate_id, market.clone());
-            markets.insert_raw(market_id, market);
+            markets.insert(market.into());
         }
 
-        Ok(markets)
+        Ok(markets.into())
     }
 }
 

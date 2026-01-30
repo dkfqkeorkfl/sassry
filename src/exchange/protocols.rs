@@ -12,6 +12,7 @@ use cassry::{
     *,
 };
 use chrono::prelude::*;
+use derive_more::{Constructor, Deref, Display, From, Into};
 use futures::FutureExt;
 use rust_decimal::{prelude::*, Decimal};
 use serde::{
@@ -22,7 +23,6 @@ use serde::{
 use serde_json::json;
 use serde_with::{serde_as, DurationSecondsWithFrac};
 use tokio::sync::RwLock;
-use derive_more::{Constructor, Deref, Display, From, Into};
 
 fn serialize_error_map<S>(
     errors: &HashMap<String, anyhow::Error>,
@@ -657,6 +657,7 @@ where
         &self.ptime
     }
 }
+
 impl<Value, Key> Default for DataSet<Value, Key>
 where
     Key: Hash + Eq + Clone + Serialize, //  + for<'a> Deserialize<'a>,
@@ -727,10 +728,10 @@ where
         }
     }
 
-    pub fn filter_new<P>(&self, mut predicate: P) -> (Self, HashMap<Key, Arc<Value>>)
+    pub fn filter_new<P>(&self, predicate: P) -> (Self, HashMap<Key, Arc<Value>>)
     where
         Self: Sized,
-        P: FnMut((&Key, &Arc<Value>)) -> bool,
+        P: Fn((&Key, &Arc<Value>)) -> bool,
     {
         let mut right = HashMap::<Key, Arc<Value>>::default();
         let mut wrong = HashMap::<Key, Arc<Value>>::default();
@@ -750,6 +751,11 @@ where
         };
         (os, wrong)
     }
+}
+
+pub trait AdditionalMarketID {
+    fn delegate_id(&self) -> MarketID;
+    fn derivatives_id(&self) -> Option<MarketID>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -772,6 +778,41 @@ pub struct Market {
     pub detail: serde_json::Value,
 }
 pub type MarketPtr = Arc<Market>;
+
+impl AdditionalMarketID for Market {
+    fn delegate_id(&self) -> MarketID {
+        let symbol = format!("{}/{}", self.base_currency, self.quote_currency);
+        self.market_id.from_symbol(symbol)
+    }
+    fn derivatives_id(&self) -> Option<MarketID> {
+        match &self.market_id {
+            MarketID::Spot(_) | MarketID::Margin(_) => None,
+            _ => Some(MarketID::Derivatives(self.market_id.symbol().to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MarketSetBuilder {
+    markets: DataSet<Market, MarketID>,
+}
+
+impl MarketSetBuilder {
+    pub fn insert(&mut self, value: Arc<Market>) {
+        if let Some(derivatives_id) = value.derivatives_id() {
+            self.markets.insert(derivatives_id, value.clone());
+        }
+
+        self.markets.insert(value.delegate_id(), value.clone());
+        self.markets.insert(value.market_id.clone(), value);
+    }
+}
+
+impl Into<DataSet<Market, MarketID>> for MarketSetBuilder {
+    fn into(self) -> DataSet<Market, MarketID> {
+        self.markets
+    }
+}
 
 impl Market {
     pub fn fix_price(
@@ -1823,7 +1864,20 @@ pub struct RestAPIParam {
     pub proxy: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq, Display, From, Into, Constructor, Deref)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    Hash,
+    Eq,
+    PartialEq,
+    Display,
+    From,
+    Into,
+    Constructor,
+    Deref,
+)]
 pub struct ExchangeName(String);
 
 impl From<&str> for ExchangeName {
@@ -1832,7 +1886,20 @@ impl From<&str> for ExchangeName {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq, Display, From, Into, Constructor, Deref)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    Hash,
+    Eq,
+    PartialEq,
+    Display,
+    From,
+    Into,
+    Constructor,
+    Deref,
+)]
 pub struct ExchangeTag(String);
 
 impl From<&str> for ExchangeTag {
@@ -1970,10 +2037,8 @@ impl ExchangeContext {
         oid: &str,
         _kind: &MarketID,
     ) -> anyhow::Result<Option<Arc<(OrderPtr, MarketPtr)>>> {
-        if let Some((market_id, order)) = self
-            .recorder
-            .get_json::<(MarketID, OrderPtr)>(&oid)
-            .await?
+        if let Some((market_id, order)) =
+            self.recorder.get_json::<(MarketID, OrderPtr)>(&oid).await?
         {
             let market = self
                 .find_market(&market_id)

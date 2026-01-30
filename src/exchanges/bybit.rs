@@ -221,7 +221,10 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(
+            util::datetime_epoch_first().into(),
+            params.get_market().clone(),
+        );
         for (oid, result) in bodies {
             let matched = result.and_then(|(v, t)| {
                 let order = params
@@ -364,7 +367,10 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(
+            util::datetime_epoch_first().into(),
+            params.get_market().clone(),
+        );
         for (oid, result) in bodies {
             let matched = result.and_then(|(v, t)| {
                 let order = params
@@ -712,26 +718,25 @@ impl exchange::RestApiTrait for RestAPI {
     ) -> anyhow::Result<DataSet<Market, MarketID>> {
         let bodies = future::join_all(["spot", "linear", "inverse"].iter().map(|category| {
             let body = json!({
-                "category" : category
+                "category" : category,
+                "limit": 1000
             });
 
-            let readable = self.clone();
             async move {
-                readable
-                    .request(
-                        context,
-                        exchange::RequestParam::new_mpb(
-                            reqwest::Method::GET,
-                            "/v5/market/instruments-info",
-                            body,
-                        ),
-                    )
-                    .await
+                self.request(
+                    context,
+                    exchange::RequestParam::new_mpb(
+                        reqwest::Method::GET,
+                        "/v5/market/instruments-info",
+                        body,
+                    ),
+                )
+                .await
             }
         }))
         .await;
 
-        let mut markets = DataSet::<Market, MarketID>::default();
+        let mut markets = MarketSetBuilder::default();
         for result in bodies {
             let (mut res, packet) = result?;
             let list = res["result"]
@@ -830,27 +835,11 @@ impl exchange::RestApiTrait for RestAPI {
                     detail: item.take(),
                 };
 
-                let ptr = Arc::new(market);
-                match &k {
-                    MarketID::Spot(_)
-                    | MarketID::Margin(_)
-                    | MarketID::LinearPerpetual(_)
-                    | MarketID::InversePerpetual(_) => {
-                        let symbol = format!("{}/{}", ptr.base_currency, ptr.quote_currency);
-                        markets.insert(k.from_symbol(symbol), ptr.clone());
-                    }
-                    _ => {}
-                }
-
-                if let MarketID::Spot(_) = &k {
-                } else {
-                    markets.insert(MarketID::Derivatives(symbol), ptr.clone());
-                }
-                markets.insert(k, ptr);
+                markets.insert(market.into());
             }
         }
 
-        Ok(markets)
+        Ok(markets.into())
     }
 }
 
@@ -964,8 +953,10 @@ impl WebsocketItf {
                     let os = if let Some(os) = ret.get_mut(&market_id) {
                         os
                     } else {
-                        let os =
-                            OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(market_id.clone()));
+                        let os = OrderSet::new(
+                            PacketTime::new(&time),
+                            MarketVal::Symbol(market_id.clone()),
+                        );
                         ret.insert(market_id.clone(), os);
                         ret.get_mut(&market_id).unwrap()
                     };
@@ -1279,9 +1270,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 let symbol = param.value["market"].as_str()?;
                 let market_id = serde_json::from_str::<MarketID>(symbol).ok()?;
                 let group = match market_id {
-                    MarketID::LinearFuture(_) | MarketID::LinearPerpetual(_) => {
-                        "/v5/public/linear"
-                    }
+                    MarketID::LinearFuture(_) | MarketID::LinearPerpetual(_) => "/v5/public/linear",
                     MarketID::InverseFuture(_) | MarketID::InversePerpetual(_) => {
                         "/v5/public/inverse"
                     }
