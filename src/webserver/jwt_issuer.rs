@@ -1,7 +1,7 @@
 use super::error::HttpError;
 use axum::{extract::FromRequestParts, http::HeaderMap};
-use axum_extra::headers::UserAgent;
 use axum_client_ip::ClientIp;
+use axum_extra::headers::UserAgent;
 use bson::{oid::ObjectId, serde_helpers::datetime::FromChrono04DateTime};
 use cassry::{
     base64::Engine,
@@ -11,7 +11,7 @@ use cassry::{
     tokio::sync::RwLock,
     *,
 };
-use derive_more::{Display, From, Into};
+use derive_more::{Deref, Display, From, Into};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, FromInto, TimestampMilliSeconds, TimestampSeconds};
@@ -20,6 +20,38 @@ use tower_cookies::{Cookie, Cookies};
 use uuid::Uuid;
 
 use super::ser;
+mod _private {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ClaimsKeyCompactor(#[serde(with = "uuid::serde::compact")] uuid::Uuid);
+
+    impl From<ClaimsKey> for ClaimsKeyCompactor {
+        fn from(value: ClaimsKey) -> Self {
+            ClaimsKeyCompactor(value.0)
+        }
+    }
+
+    impl Into<ClaimsKey> for ClaimsKeyCompactor {
+        fn into(self) -> ClaimsKey {
+            ClaimsKey(self.0)
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into, Deref)]
+#[display("{}", _0)]
+pub struct ClaimsKey(#[serde_as(as = "DisplayFromStr")] uuid::Uuid);
+impl ClaimsKey {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+
+    pub fn value(&self) -> &uuid::Uuid {
+        &self.0
+    }
+}
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into)]
@@ -37,8 +69,8 @@ impl Into<String> for UidKey {
     }
 }
 
-
 pub struct LoginParams {
+    pub alias: String,
     pub uid: UidKey,
     pub password: String,
     pub role: i64,
@@ -46,24 +78,6 @@ pub struct LoginParams {
     pub nick: String,
     pub ip: ClientIp,
     pub user_agent: UserAgent,
-}
-
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SasAccessPayload {
-    #[serde(with = "uuid::serde::compact")]
-    pub derived_from: uuid::Uuid,
-
-    #[serde_as(as = "FromInto<i64>")]
-    pub uid: UidKey,
-    pub role: i64,
-    pub nick: String,
-
-    #[serde_as(as = "TimestampMilliSeconds")]
-    pub login_at: DateTime<Utc>,
-
-    #[serde_as(as = "TimestampMilliSeconds")]
-    pub origin_at: DateTime<Utc>,
 }
 
 #[serde_as]
@@ -83,6 +97,7 @@ pub struct SasRefreshmutable {
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasRefreshImmutable {
+    pub alias: String,
     /// 최초 발급자
     pub origin_iss: String,
     pub role: i64,
@@ -107,8 +122,7 @@ pub struct SasRefreshClaims {
     pub id: Option<ObjectId>,
 
     /// 토큰 고유 ID
-    #[serde_as(as = "DisplayFromStr")]
-    pub jti: Uuid,
+    pub jti: ClaimsKey,
 
     /// 토큰의 만료 시간
     #[serde_as(as = "FromChrono04DateTime")]
@@ -138,11 +152,28 @@ pub trait CsrfKeyProvider {
 }
 
 #[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SasAccessPayload {
+    #[serde_as(as = "FromInto<_private::ClaimsKeyCompactor>")]
+    pub derived_from: ClaimsKey,
+
+    #[serde_as(as = "FromInto<i64>")]
+    pub uid: UidKey,
+    pub role: i64,
+    pub nick: String,
+
+    #[serde_as(as = "TimestampMilliSeconds")]
+    pub login_at: DateTime<Utc>,
+
+    #[serde_as(as = "TimestampMilliSeconds")]
+    pub origin_at: DateTime<Utc>,
+}
+
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SasAccessClaims {
     /// 토큰 고유 ID
-    #[serde_as(as = "DisplayFromStr")]
-    pub jti: Uuid,
+    pub jti: ClaimsKey,
     /// 토큰의 만료 시간(jwt는 초단위 지원)
     #[serde_as(as = "TimestampSeconds")]
     pub exp: DateTime<Utc>,
@@ -505,13 +536,14 @@ impl TokenIssuerImpl {
         let refresh_jti = util::datetime_to_uuid7(now)?;
         let refresh_claims = SasRefreshClaims {
             id: None,
-            jti: refresh_jti,
+            jti: refresh_jti.into(),
             exp: now + self.refresh_ttl,
             iss: self.name.clone(),
             aud: self.name.clone(),
             sub: params.uid.clone(),
             iat: now,
             immutable: Arc::new(SasRefreshImmutable {
+                alias: params.alias,
                 origin_iss: self.name.clone(),
                 role: params.role,
                 password: params.password,
@@ -523,7 +555,7 @@ impl TokenIssuerImpl {
         };
 
         let user_payload = SasAccessPayload {
-            derived_from: refresh_jti,
+            derived_from: refresh_jti.into(),
             uid: params.uid.clone(),
             role: params.role,
             nick: params.nick,
@@ -532,7 +564,7 @@ impl TokenIssuerImpl {
         };
 
         let access_claims = SasAccessClaims {
-            jti: Uuid::now_v7(),
+            jti: ClaimsKey::new(),
             exp: now + self.access_ttl,
             payload: user_payload.into(),
         };
@@ -560,7 +592,7 @@ impl TokenIssuerImpl {
         let refresh_jti = util::datetime_to_uuid7(now)?;
         let refresh_claims = SasRefreshClaims {
             id: None,
-            jti: refresh_jti,
+            jti: refresh_jti.into(),
             exp: now + self.refresh_ttl,
 
             iss: self.name.clone(),
@@ -578,9 +610,9 @@ impl TokenIssuerImpl {
         };
 
         let mut user_payload = prev_payload.as_ref().clone();
-        user_payload.derived_from = refresh_jti;
+        user_payload.derived_from = refresh_jti.into();
         let access_claims = SasAccessClaims {
-            jti: Uuid::now_v7(),
+            jti: ClaimsKey::new(),
             exp: now + self.access_ttl,
             payload: user_payload.into(),
         };
