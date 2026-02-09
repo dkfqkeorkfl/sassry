@@ -704,7 +704,7 @@ impl exchange::RestApiTrait for RestAPI {
                 )
                 .await?;
 
-            let mut symbols = root
+            let symbols = root
                 .as_array()
                 .map(|v| {
                     v.iter()

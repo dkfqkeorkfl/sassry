@@ -1,4 +1,3 @@
-use axum::response::Redirect;
 use chrono::{DateTime, Duration, Utc};
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
@@ -9,6 +8,7 @@ use oauth2::{
 
 use cassry::*;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleProfile {
@@ -76,7 +76,7 @@ impl GoogleOAuth {
         Ok(s)
     }
 
-    pub async fn login(&self) -> anyhow::Result<(Redirect, PkceCodeVerifier)> {
+    pub async fn login(&self) -> anyhow::Result<(Url, PkceCodeVerifier)> {
         let (pkce_code_challenge, pkce_code_verifier) =
             oauth2::PkceCodeChallenge::new_random_sha256();
 
@@ -89,7 +89,7 @@ impl GoogleOAuth {
             .set_pkce_challenge(pkce_code_challenge)
             .url();
 
-        Ok((Redirect::temporary(auth_url.as_str()), pkce_code_verifier))
+        Ok((auth_url, pkce_code_verifier))
     }
 
     pub async fn auth_callback(
