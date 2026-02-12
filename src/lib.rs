@@ -30,6 +30,6 @@ pub use cassry_derive::ErrCode;
 pub use validator;
 
 #[cfg(debug_assertions)]
-pub const DEBUG_POST_FIX: &str = ".dev";
+pub const CONFIG_POST_FIX: &str = ".dev";
 #[cfg(not(debug_assertions))]
-pub const RELEASE_POST_FIX: &str = ".prod";
+pub const CONFIG_POST_FIX: &str = ".prod";
