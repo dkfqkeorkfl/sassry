@@ -28,8 +28,13 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
-// https://www.runit.cloud/2020/04/https-ssl.html
 
+#[derive(Debug, thiserror::Error)]
+#[error("Server errors: {errors:?}")]
+pub struct ServerErrors {
+    pub errors: Vec<anyhow::Error>,
+}
+// https://www.runit.cloud/2020/04/https-ssl.html
 /// Axum 미들웨어 설정 구조체
 /// 모든 필드는 Option으로 선언되어 있어 선택적으로 설정 가능
 /// #[serde_as]
@@ -198,9 +203,12 @@ pub struct Param {
     pub ping_interval: chrono::Duration,
 }
 
+type TaskHandle = tokio::task::JoinHandle<Result<(), std::io::Error>>;
 pub struct Server {
     server_config: ServerConfig,
     middleware_config: MiddlewareConfig,
+    handle: axum_server::Handle<SocketAddr>,
+    tasks: Vec<TaskHandle>,
 }
 
 impl Server {
@@ -483,7 +491,10 @@ impl Server {
         router
     }
 
-    async fn redirect_http_to_https2(config: Arc<HttpsConfig>) -> anyhow::Result<()> {
+    async fn redirect_http_to_https2(
+        handle: axum_server::Handle<SocketAddr>,
+        config: Arc<HttpsConfig>,
+    ) -> anyhow::Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
         fn make_https(host: &str, uri: Uri, ports: Arc<HttpsConfig>) -> anyhow::Result<Uri> {
             let mut parts = uri.into_parts();
 
@@ -527,10 +538,15 @@ impl Server {
             )
             .with_state(config.clone());
 
-        let addr = SocketAddr::new(config.addr.clone(), config.http_port.unwrap());
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        axum::serve(listener, router.into_make_service()).await?;
-        Ok(())
+        let handle = tokio::spawn(async move {
+            let addr = SocketAddr::new(config.addr.clone(), config.http_port.unwrap());
+            axum_server::bind(addr)
+                .handle(handle)
+                .serve(router.into_make_service())
+                .await
+        });
+
+        Ok(handle)
     }
 
     /// MiddlewareConfig를 사용하여 서버를 생성하는 새로운 함수
@@ -577,45 +593,52 @@ impl Server {
         let service =
             service_builder.service(router.into_make_service_with_connect_info::<SocketAddr>());
 
+        let handle = axum_server::Handle::new();
+        let copied_handle = handle.clone();
+        let shutdown_task = tokio::spawn(async move {
+            cassry::util::shutdown_signal().await?;
+            cassry::info!("Received termination signal shutting down");
+            copied_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+            Ok(())
+        });
+
+        let copied_handle = handle.clone();
         // ServerConfig에서 설정 추출
-        match &server_config {
+        let server_tasks = match &server_config {
             ServerConfig::Http(config) => {
                 let addr = config.socket_addr.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = axum_server::bind(addr.clone()).serve(service).await {
-                        cassry::error!("occur error in server({:?}) : {}", addr, e.to_string());
-                    }
+                let http_task = tokio::spawn(async move {
+                    axum_server::bind(addr.clone())
+                        .handle(copied_handle)
+                        .serve(service)
+                        .await
                 });
+                vec![http_task]
             }
             ServerConfig::Https(config) => {
-                if config.http_port.is_some() {
-                    let config = config.clone();
-                    tokio::spawn(async move {
-                        let config = Arc::new(config);
-                        if let Err(e) = Server::redirect_http_to_https2(config.clone()).await {
-                            cassry::error!(
-                                "occur error in redirect_http_to_https2({:?}:{}) : {}",
-                                config.addr,
-                                config.http_port.unwrap(),
-                                e.to_string()
-                            );
-                        }
-                    });
-                }
-
                 let addr = SocketAddr::new(config.addr, config.https_port);
                 let acceptor =
                     RustlsConfig::from_pem_file(&config.cert_file, &config.key_file).await?;
-                tokio::spawn(async move {
-                    if let Err(e) = axum_server::bind_rustls(addr.clone(), acceptor)
+                let https_task = tokio::spawn(async move {
+                    axum_server::bind_rustls(addr.clone(), acceptor)
+                        .handle(copied_handle.clone())
                         .serve(service)
                         .await
-                    {
-                        cassry::error!("occur error in server({:?}) : {}", addr, e.to_string());
-                    }
                 });
+
+                if config.http_port.is_some() {
+                    let config = config.clone();
+                    let http_task =
+                        Server::redirect_http_to_https2(handle.clone(), Arc::new(config)).await?;
+                    vec![https_task, http_task]
+                } else {
+                    vec![https_task]
+                }
             }
         };
+
+        let mut tasks = vec![shutdown_task];
+        tasks.extend(server_tasks.into_iter());
 
         cassry::info!(
             "success that open webserver with MiddlewareConfig : {:?}",
@@ -624,6 +647,58 @@ impl Server {
         Ok(Server {
             server_config: server_config,
             middleware_config: middleware_config,
+            handle: handle,
+            tasks,
         })
+    }
+
+    pub async fn run_until_shutdown(self) -> Result<(), ServerErrors> {
+        let mut results = Vec::new();
+        let mut tasks = self.tasks;
+        let mut shutdown_task_id = if let Some(shutdown_task) = tasks.get(0) {
+            Some(shutdown_task.id())
+        } else {
+            None
+        };
+
+        while !tasks.is_empty() {
+            let (result, _idx, remaining) = futures::future::select_all(tasks).await;
+            tasks = remaining;
+
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if let Some(id) = shutdown_task_id {
+                        if let Some(idx) = tasks.iter().position(|t| t.id() == id) {
+                            tasks.remove(idx).abort();
+                        }
+                        shutdown_task_id = None;
+                    }
+
+                    results.push(e.into());
+                    // 서버 에러 → 나머지도 함께 종료
+                    self.handle
+                        .graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+                }
+                Err(e) => {
+                    if let Some(id) = shutdown_task_id {
+                        if let Some(idx) = tasks.iter().position(|t| t.id() == id) {
+                            tasks.remove(idx).abort();
+                        }
+                        shutdown_task_id = None;
+                    }
+
+                    results.push(e.into());
+                    self.handle
+                        .graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+                }
+            }
+        }
+
+        if results.is_empty() {
+            Ok(())
+        } else {
+            Err(ServerErrors { errors: results })
+        }
     }
 }
