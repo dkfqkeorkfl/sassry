@@ -243,14 +243,16 @@ impl RestAPI {
             });
             (Default::default(), payload)
         } else {
-            let querystring = json::url_encode(body)?;
-            let query_hash = ring::digest::digest(&ring::digest::SHA512, querystring.as_bytes());
+            let querystring =
+                json::urlencode_for_sign(body.as_object().ok_or(anyhowln!("invalid body"))?)?;
+
+            let query_hash = ring::digest::digest(&ring::digest::SHA256, querystring.as_bytes());
             let payload = json!({
                 "nonce" : nonce,
                 "timestamp": timestamp,
                 "access_key" : key.key.expose_secret().to_string(),
                 "query_hash" : hex::encode(query_hash.as_ref()),
-                "query_hash_alg" : "SHA512",
+                "query_hash_alg" : "SHA256",
             });
 
             (querystring, payload)
@@ -304,7 +306,10 @@ impl exchange::RestApiTrait for RestAPI {
         }))
         .await;
 
-        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(
+            util::datetime_epoch_first().into(),
+            params.get_market().clone(),
+        );
         for (oid, result) in bodies {
             match result {
                 Ok((_root, ptime)) => {
@@ -337,8 +342,8 @@ impl exchange::RestApiTrait for RestAPI {
             let side = if param.side.is_buy() { "bid" } else { "ask" };
             let body = json!({
                 "market": market.market_id.symbol(),
-                "order_type": "limit",
                 "side": side,
+                "order_type": "limit",
                 "price": param.price.to_string(),
                 "volume": param.amount.to_string(),
             });
@@ -395,11 +400,11 @@ impl exchange::RestApiTrait for RestAPI {
                             util::datetime_epoch_first().into(),
                             MarketVal::Pointer(market.clone()),
                         );
-                        
+
                         for order_id in caps[1].split(",") {
                             let mut order = Order::from_order_param(param);
                             order.oid = order_id.to_string();
-                            os.insert_raw(order);    
+                            os.insert_raw(order);
                         }
 
                         self.request_order_cancel(context, &os).await?;
@@ -435,7 +440,10 @@ impl exchange::RestApiTrait for RestAPI {
         .await;
         // 빗썸은 개별 주문 조회를 지원하지 않으므로 주문 리스트를 조회
 
-        let mut ret = OrderResult::new(util::datetime_epoch_first().into(), params.get_market().clone());
+        let mut ret = OrderResult::new(
+            util::datetime_epoch_first().into(),
+            params.get_market().clone(),
+        );
         for (oid, result) in bodies {
             match result {
                 Ok((value, ptime)) => {
@@ -549,26 +557,26 @@ impl exchange::RestApiTrait for RestAPI {
         {
             let obj = item.as_object().ok_or(anyhowln!("invalid object"))?;
             if let Some(sz) = obj
-                        .get("ask_size")
-                        .map(|v| v.to_string())
-                        .filter(|sz| *sz != "0")
-                    {
-                        orderbook.ask.push(Arc::new((
-                            LazyDecimal::from(obj["ask_price"].to_string()),
-                            LazyDecimal::from(sz),
-                        )));
-                    }
+                .get("ask_size")
+                .map(|v| v.to_string())
+                .filter(|sz| *sz != "0")
+            {
+                orderbook.ask.push(Arc::new((
+                    LazyDecimal::from(obj["ask_price"].to_string()),
+                    LazyDecimal::from(sz),
+                )));
+            }
 
-                    if let Some(sz) = obj
-                        .get("bid_size")
-                        .map(|v| v.to_string())
-                        .filter(|sz| *sz != "0")
-                    {
-                        orderbook.bid.push(Arc::new((
-                            LazyDecimal::from(obj["bid_price"].to_string()),
-                            LazyDecimal::from(sz),
-                        )));
-                    }
+            if let Some(sz) = obj
+                .get("bid_size")
+                .map(|v| v.to_string())
+                .filter(|sz| *sz != "0")
+            {
+                orderbook.bid.push(Arc::new((
+                    LazyDecimal::from(obj["bid_price"].to_string()),
+                    LazyDecimal::from(sz),
+                )));
+            }
         }
 
         orderbook.detail = root.clone();
@@ -1004,7 +1012,8 @@ impl WebsocketItf {
                     _ => {}
                 };
 
-                let mut os = OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(market_id.clone()));
+                let mut os =
+                    OrderSet::new(PacketTime::new(&time), MarketVal::Symbol(market_id.clone()));
                 os.insert_raw(order);
                 let mut ret = HashMap::<MarketID, OrderSet>::default();
                 ret.insert(market_id, os);

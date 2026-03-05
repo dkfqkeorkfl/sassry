@@ -44,7 +44,7 @@ axum-client-ip = "1"
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["full"] }
 tower_governor = "0.8"
-tower-sessions = "0.14"
+tower-sessions = "0.15"
 tower-cookies = "0.11"
 oauth2 = "5"
 
@@ -60,7 +60,7 @@ bson = { version = "3", features = [
 # others
 # dashmap = "6.1.0"
 bitflags = "2"
-rand = { version = "0.9", features = ["std"] }
+rand = { version = "0.10", features = ["std"] }
 url = "2.5"
 
 ta = "0.5.0"
