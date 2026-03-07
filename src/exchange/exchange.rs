@@ -142,7 +142,7 @@ pub trait RestApiTrait: Send + Sync + 'static {
             if signed_result.body.is_null() {
                 format!("{}{}", context.param.restapi.url, signed_result.path)
             } else {
-                let urlcode = json::url_encode(&signed_result.body)?;
+                let urlcode = serde_urlencoded::to_string(&signed_result.body)?;
                 format!(
                     "{}{}?{}",
                     context.param.restapi.url, signed_result.path, urlcode

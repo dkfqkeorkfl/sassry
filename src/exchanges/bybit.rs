@@ -680,7 +680,7 @@ impl exchange::RestApiTrait for RestAPI {
             serde_json::Value::from(ctx.param.key.key.expose_secret().to_string());
         param.body["timestamp"] = serde_json::Value::from(milli);
 
-        let urlcode = json::url_encode(&param.body)?;
+        let urlcode = cassry::json::urlencode_for_sign(param.body.as_object().ok_or(anyhowln!("invalid body"))?)?;
         let key = ring::hmac::Key::new(
             ring::hmac::HMAC_SHA256,
             ctx.param.key.secret.expose_secret().as_bytes(),
