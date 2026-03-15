@@ -6,7 +6,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use serde_with::{serde_as, DurationSeconds};
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
@@ -90,10 +90,10 @@ pub struct HttpsConfig {
     pub https_port: u16,
 
     /// SSL 인증서 파일 경로
-    pub cert_file: String,
+    pub cert_file: PathBuf,
 
     /// SSL 개인키 파일 경로
-    pub key_file: String,
+    pub key_file: PathBuf,
 
     /// HTTP 포트 (리다이렉트용)
     #[serde(default)]
@@ -188,19 +188,6 @@ pub struct HstsConfig {
     /// includeSubDomains 플래그
     #[serde(default)]
     pub include_subdomains: Option<bool>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Param {
-    pub addr: IpAddr,
-    pub cert: String,
-    pub key: String,
-
-    pub http_port: u16,
-    pub https_port: u16,
-
-    pub eject: chrono::Duration,
-    pub ping_interval: chrono::Duration,
 }
 
 type TaskHandle = tokio::task::JoinHandle<Result<(), std::io::Error>>;
