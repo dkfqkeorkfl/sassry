@@ -1082,6 +1082,10 @@ where
             self.datas.insert(key, value);
         }
     }
+
+    pub fn take(self) -> HashMap<Key, Arc<Value>> {
+        self.datas
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
