@@ -233,7 +233,10 @@ impl Inner {
         let uuid = conn.websocket.get_uuid().clone();
         let group = conn.group.clone();
         let ptr = Arc::new(RwLock::new(conn));
-        self.connections_by_id.write().await.insert(uuid, ptr.clone());
+        self.connections_by_id
+            .write()
+            .await
+            .insert(uuid, ptr.clone());
         self.connections.write().await.insert(group, ptr.clone());
         ptr
     }
@@ -450,10 +453,7 @@ impl ExchangeSocket {
         Ok(())
     }
 
-    async fn make_websocket(
-        inner: &Arc<Inner>,
-        param: ConnectParams,
-    ) -> anyhow::Result<Websocket> {
+    async fn make_websocket(inner: &Arc<Inner>, param: ConnectParams) -> anyhow::Result<Websocket> {
         let inner = Arc::downgrade(inner);
         Websocket::connect(param, move |websocket, signal| {
             let inner = inner.clone();
@@ -491,5 +491,20 @@ impl ExchangeSocket {
 
     fn get_exchange_context(&self) -> &ExchangeContextPtr {
         &self.inner.context
+    }
+
+    pub async fn socket_status(&self) -> serde_json::Value {
+        let connections = self.inner.connections.read().await;
+        let mut result = serde_json::Map::new();
+        for (group, conn) in connections.iter() {
+            let conn = conn.read().await;
+            let eject = conn.websocket.get_eject();
+            let value = serde_json::json!({
+                "lastping": eject.lastping().await.with_timezone(&chrono::Local),
+                "laytency": eject.laytency().await.as_seconds_f32()
+            });
+            result.insert(group.clone(), value);
+        }
+        serde_json::Value::Object(result)
     }
 }

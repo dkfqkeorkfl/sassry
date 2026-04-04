@@ -204,16 +204,7 @@ impl WebsocketParams {
     }
 }
 
-#[async_trait]
-pub trait ConnectionItf: Send + Sync + 'static {
-    async fn send(&self, message: Message) -> anyhow::Result<()>;
-    async fn close(&self, param: Option<(u16, String)>) -> anyhow::Result<()>;
-    async fn is_connected(&self) -> bool;
-    fn get_uuid(&self) -> &uuid::Uuid;
-    fn get_created(&self) -> &DateTime<Utc>;
-}
-
-struct Eject {
+pub struct Eject {
     sendping: RwLock<chrono::DateTime<Utc>>,
     recvping: RwLock<chrono::DateTime<Utc>>,
     timeout: chrono::Duration,
@@ -221,9 +212,10 @@ struct Eject {
 
 impl Eject {
     pub fn new(timeout: chrono::Duration) -> Self {
+        let now = Utc::now();
         Self {
-            sendping: RwLock::new(Utc::now()),
-            recvping: RwLock::new(Utc::now()),
+            sendping: RwLock::new(now),
+            recvping: RwLock::new(now),
             timeout: timeout,
         }
     }
@@ -242,6 +234,10 @@ impl Eject {
         }
     }
 
+    pub async fn lastping(&self) -> chrono::DateTime<Utc> {
+        *self.sendping.read().await
+    }
+
     pub async fn ping(&self) -> Message {
         let now = Utc::now();
         *self.sendping.write().await = now;
@@ -258,6 +254,17 @@ impl Eject {
         }
         Ok(())
     }
+}
+
+
+#[async_trait]
+pub trait ConnectionItf: Send + Sync + 'static {
+    async fn send(&self, message: Message) -> anyhow::Result<()>;
+    async fn close(&self, param: Option<(u16, String)>) -> anyhow::Result<()>;
+    async fn is_connected(&self) -> bool;
+    fn get_uuid(&self) -> &uuid::Uuid;
+    fn get_created(&self) -> &DateTime<Utc>;
+    fn get_eject(&self) -> &Eject;
 }
 
 //Behavior
@@ -303,6 +310,10 @@ impl ConnectionItf for ConnectionReal {
 
     fn get_created(&self) -> &DateTime<Utc> {
         &self.created
+    }
+
+    fn get_eject(&self) -> &Eject {
+        &self.eject
     }
 }
 
@@ -459,17 +470,21 @@ impl ConnectionReal {
     }
 }
 
-#[derive(Default)]
 pub struct ConnectionNull {
     created: DateTime<Utc>,
     uuid: uuid::Uuid,
+    eject: Eject,
 }
 
 impl ConnectionNull {
     pub fn new() -> Arc<Self> {
         let now = Utc::now();
         let uuid = uuid::Uuid::new_v4();
-        Arc::new(ConnectionNull { created: now, uuid: uuid })
+        Arc::new(ConnectionNull {
+            created: now,
+            uuid: uuid,
+            eject: Eject::new(chrono::Duration::seconds(5)),
+        })
     }
 }
 
@@ -489,9 +504,12 @@ impl ConnectionItf for ConnectionNull {
         &self.uuid
     }
 
-
     fn get_created(&self) -> &DateTime<Utc> {
         &self.created
+    }
+    
+    fn get_eject(&self) -> &Eject {
+        &self.eject
     }
 }
 
@@ -602,5 +620,9 @@ impl Websocket {
 
     pub fn get_uuid(&self) -> &uuid::Uuid {
         self.conn.get_uuid()
+    }
+
+    pub fn get_eject(&self) -> &Eject {
+        self.conn.get_eject()
     }
 }

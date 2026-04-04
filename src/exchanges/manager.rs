@@ -3,9 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::RwLock;
 
-use cassry::*;
 use super::super::exchange::*;
 use super::super::webserver::websocket::*;
+use cassry::*;
 
 pub struct Manager {
     tags: Vec<ExchangeTag>,
@@ -22,6 +22,18 @@ impl Manager {
             instatnts: Default::default(),
             db: db,
         }
+    }
+
+    pub async fn socket_status(&self) -> serde_json::Value {
+        let connections = self.instatnts.read().await;
+        let mut result = serde_json::Map::new();
+        for (tag, weak) in connections.iter() {
+            if let Some(exchange) = weak.upgrade() {
+                let value = exchange.socket_status().await;
+                result.insert(tag.to_string(), value);
+            }
+        }
+        serde_json::Value::Object(result)
     }
 
     pub fn get_tags(&self) -> Vec<ExchangeTag> {
@@ -43,7 +55,13 @@ impl Manager {
         //     opt_max_trades_chche: 2000,
         // };
 
-        if let Some(exchange) = self.instatnts.read().await.get(tag).and_then(|weak| weak.upgrade()) {
+        if let Some(exchange) = self
+            .instatnts
+            .read()
+            .await
+            .get(tag)
+            .and_then(|weak| weak.upgrade())
+        {
             cassry::info!("Gets an exchange({}) that is already loaded.", tag);
             return Ok(exchange);
         }
@@ -86,28 +104,29 @@ impl Manager {
             kind: MarketOpt::All,
         };
 
-        let exchange = match key.exchange.as_str() {
-            "bybit" => {
-                exchange::Exchange::new::<super::bybit::RestAPI, super::bybit::WebsocketItf>(
-                    param,
-                    self.db.clone(),
-                    None,
-                )
-                .await
-            }
-            "bithumb" => {
-                exchange::Exchange::new::<super::bithumb::RestAPI, super::bithumb::WebsocketItf>(
-                    param,
-                    self.db.clone(),
-                    None,
-                )
-                .await
-            }
-            _ => Err(anyhowln!("invalid exchange name : {}", key.exchange)),
-        }?;
+        let exchange =
+            match key.exchange.as_str() {
+                "bybit" => {
+                    exchange::Exchange::new::<super::bybit::RestAPI, super::bybit::WebsocketItf>(
+                        param,
+                        self.db.clone(),
+                        None,
+                    )
+                    .await
+                }
+                "bithumb" => exchange::Exchange::new::<
+                    super::bithumb::RestAPI,
+                    super::bithumb::WebsocketItf,
+                >(param, self.db.clone(), None)
+                .await,
+                _ => Err(anyhowln!("invalid exchange name : {}", key.exchange)),
+            }?;
 
         cassry::info!("Exchange({}) loaded successfully", tag);
-        self.instatnts.write().await.insert(key.tag.clone(), Arc::downgrade(&exchange));
+        self.instatnts
+            .write()
+            .await
+            .insert(key.tag.clone(), Arc::downgrade(&exchange));
         Ok(exchange)
     }
 }

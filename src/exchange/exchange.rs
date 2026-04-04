@@ -794,6 +794,10 @@ impl Exchange {
 
         Ok(ret)
     }
+
+    pub async fn socket_status(&self) -> serde_json::Value {
+        self.websocket.socket_status().await
+    }
 }
 
 pub type ExchangeArc = Arc<Exchange>;
