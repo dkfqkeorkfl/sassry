@@ -339,7 +339,7 @@ impl Exchange {
                     }
 
                     if let SubscribeResult::Err(e) = &subsicrebe {
-                        cassry::error!("SubscribeResult::Err : {}", e.to_string());
+                        cassry::error!("{} : {:?}", e.to_string(), signal);
                     } else if let SubscribeResult::Authorized(success) = &subsicrebe {
                         if *success {
                             is_connected
@@ -380,12 +380,12 @@ impl Exchange {
                     )
                     .await
                 {
-                    cassry::info!("success that connect websocket : url({}), check-wallet(true)  check-auth(true)", context.param.websocket.url);
+                    cassry::info!("success that connect websocket : url({}), check-wallet(true), check-auth(true)", context.param.websocket.url);
                     break;
                 }
 
                 cassry::info!(
-                    "waiting for creating websocket : url({}), , check-wallet({})  check-auth({})",
+                    "waiting for creating websocket : url({}), check-wallet({}), check-auth({})",
                     context.param.websocket.url,
                     is_connected
                         .has_flag(ExchangeCreateOpt::CheckWallet.bits())

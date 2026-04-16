@@ -256,7 +256,6 @@ impl Eject {
     }
 }
 
-
 #[async_trait]
 pub trait ConnectionItf: Send + Sync + 'static {
     async fn send(&self, message: Message) -> anyhow::Result<()>;
@@ -344,96 +343,153 @@ impl ConnectionReal {
             created: Utc::now(),
 
             param: param,
-            sender: sender,
-            eject: eject,
+            sender: sender.clone(),
+            eject: eject.clone(),
             is_connected: is_connected.clone(),
         });
 
-        let wpt_ws = Arc::downgrade(&ws);
+        let ctx = (
+            uuid.clone(),
+            is_connected.clone(),
+            sender,
+            eject,
+            ws.get_param().get_ping_interval().clone(),
+        );
         tokio::spawn(async move {
-            let ping_interval = if let Some(ws) = wpt_ws.upgrade() {
-                ws.get_param().get_ping_interval().clone()
-            } else {
-                return;
+            let (uuid, is_connected, sender, eject, ping_interval) = ctx;
+            cassry::info!("ping loop started : {}", uuid.to_string());
+
+            let proc = || async {
+                if eject.is_timeout().await {
+                    anyhow::bail!("eject timeout");
+                }
+
+                let message = eject.ping().await;
+                sender.send(message).map_err(anyhow::Error::from)
             };
 
-            loop {
-                tokio::time::sleep(ping_interval.clone()).await;
-                if let Some(ws) = wpt_ws.upgrade().filter(|ws| !ws.sender.is_closed()) {
-                    if ws.eject.is_timeout().await {
-                        ws.sender.closed().await;
-                        break;
+            let mut next_deadline = tokio::time::Instant::now() + ping_interval;
+            while *is_connected.read().await {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(next_deadline) => {
+                        if let Err(e) = proc().await {
+                            cassry::error!(
+                                "[ws:{}] it's failed to send ping : {}",
+                                uuid.to_string(),
+                                e.to_string()
+                            );
+                            break;
+                        }
+                        else {
+                            next_deadline = tokio::time::Instant::now() + ping_interval;
+                        }
                     }
-
-                    let message = ws.eject.ping().await;
-                    // sender가 에러나는 경우는 sender가 닫혔을 때이므로 처리하지 않음
-                    if let Err(e) = ws.sender.send(message) {
-                        cassry::error!(
-                            "[ws:{}] it's failed to send ping : {}",
-                            uuid.to_string(),
-                            e.to_string()
-                        );
-                        break;
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
                     }
-                } else {
-                    break;
-                }
+                };
             }
+
+            *is_connected.write().await = false;
+            cassry::info!("ping loop ended : {}", uuid.to_string());
         });
 
-        let ctx = (uuid.clone(), receiver, write_half, is_connected.clone());
+        let ctx = (uuid.clone(), receiver, write_half, is_connected);
         tokio::spawn(async move {
             let (uuid, mut receiver, mut write_half, is_connected) = ctx;
+            cassry::info!("sender loop started : {}", uuid.to_string());
 
-            while let (Some(message), is_connected) =
-                (receiver.recv().await, *is_connected.read().await)
-            {
-                if !is_connected {
-                    break;
-                }
+            while *is_connected.read().await {
+                tokio::select! {
+                    message = receiver.recv() => {
+                        let result = if let Some(message) = message {
+                            write_half.send(message.into()).await.map_err(anyhow::Error::from)
+                        }
+                        else {
+                            Err(anyhow::anyhow!("receiver is closed"))
+                        };
 
-                if let Err(e) = write_half.send(message.into()).await {
-                    cassry::error!(
-                        "[ws:{}] it's failed to send message : {}",
-                        uuid.to_string(),
-                        e.to_string()
-                    );
-                    break;
-                }
+                        if let Err(e) = result {
+                            cassry::error!(
+                                "[ws:{}] it's failed to send message : {}",
+                                uuid.to_string(),
+                                e.to_string()
+                            );
+                            break;
+                        }
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    }
+                };
             }
+
+            *is_connected.write().await = false;
+            cassry::info!("sender loop ended : {}", uuid.to_string());
         });
 
         let ctx = (Arc::downgrade(&ws), read_half, callback);
         tokio::spawn(async move {
             let (wpt_ws, mut read_half, callback) = ctx;
-            if let Some(spt) = wpt_ws.upgrade() {
+            cassry::info!("receiver loop started : {}", uuid.to_string());
+            let is_connected = if let Some(spt) = wpt_ws.upgrade() {
+                let is_connected = spt.is_connected.clone();
                 callback(spt, Signal::Opened).await;
-            }
+                is_connected
+            } else {
+                return;
+            };
 
-            while let Some((result, ptr)) = read_half.next().await.zip(wpt_ws.upgrade()) {
-                let signal = result
-                    .map(|e| Signal::Received(e.into()))
-                    .inspect_err(|e| {
-                        cassry::error!("[ws:{}] occur error : {}", uuid.to_string(), e.to_string())
-                    })
-                    .unwrap_or_else(|e| Signal::Error(e.into()));
+            let proc = |result: Option<Result<M, E>>| async {
+                if let Some((result, ptr)) = result.zip(wpt_ws.upgrade()) {
+                    let signal = result
+                        .map(|e| Signal::Received(e.into()))
+                        .inspect_err(|e| {
+                            cassry::error!(
+                                "[ws:{}] occur error : {}",
+                                uuid.to_string(),
+                                e.to_string()
+                            )
+                        })
+                        .unwrap_or_else(|e| Signal::Error(e.into()));
 
-                match &signal {
-                    Signal::Received(message) => {
-                        if let Message::Pong(payload) = message {
-                            let _ = ptr.eject.update_pong(payload).await;
+                    match &signal {
+                        Signal::Received(message) => {
+                            if let Message::Pong(payload) = message {
+                                let _ = ptr.eject.update_pong(payload).await;
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    callback(ptr, signal).await;
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("connection is closed"))
+                }
+            };
+
+            while *is_connected.read().await {
+                tokio::select! {
+                    result = read_half.next() => {
+                        if let Err(e) = proc(result).await {
+                            cassry::error!(
+                                "[ws:{}] it's failed to process message : {}",
+                                uuid.to_string(),
+                                e.to_string()
+                            );
+                            break;
                         }
                     }
-                    _ => {}
-                }
-
-                callback(ptr, signal).await;
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    }
+                };
             }
 
             if let Some(spt) = wpt_ws.upgrade() {
                 *spt.is_connected.write().await = false;
                 callback(spt, Signal::Closed).await;
             }
+
+            cassry::info!("receiver loop ended : {}", uuid.to_string());
         });
 
         ws
@@ -507,7 +563,7 @@ impl ConnectionItf for ConnectionNull {
     fn get_created(&self) -> &DateTime<Utc> {
         &self.created
     }
-    
+
     fn get_eject(&self) -> &Eject {
         &self.eject
     }

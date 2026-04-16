@@ -297,7 +297,7 @@ impl ExchangeSocket {
                 continue;
             }
 
-            cassry::info!(
+            cassry::warn!(
                 "websocket is disconnected : url({}), group({}), uuid({})",
                 conn.websocket.get_connected_url_str().unwrap_or_default(),
                 conn.group,
