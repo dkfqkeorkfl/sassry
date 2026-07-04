@@ -1,7 +1,7 @@
+use axum_client_ip::ClientIp;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use std::net::IpAddr;
-use axum_client_ip::ClientIp;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]

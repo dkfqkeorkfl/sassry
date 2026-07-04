@@ -1,7 +1,11 @@
-use axum::{Json, extract::{FromRequest, Query, Request}, http::StatusCode};
+use axum::{
+    extract::{FromRequest, Query, Request},
+    http::StatusCode,
+    Json,
+};
 use cassry::*;
 use derive_more::From;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use validator::{Validate, ValidationErrors};
 /// HTTP status code별 대표적인 에러 타입들
@@ -135,7 +139,16 @@ pub struct ValidationErrorRes(pub ValidationErrors);
 
 impl std::fmt::Display for ValidationErrorRes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.errors().keys().map(|k| &**k).collect::<Vec<_>>().join(", "))
+        write!(
+            f,
+            "{}",
+            self.0
+                .errors()
+                .keys()
+                .map(|k| &**k)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
