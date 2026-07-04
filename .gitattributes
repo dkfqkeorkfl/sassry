@@ -1,0 +1,10 @@
+# Line-ending policy: LF everywhere.
+# This crate is Linux-first and is consumed as a submodule inside a devcontainer
+# where a global core.autocrlf=true would otherwise materialize CRLF in the
+# working tree on checkout. eol=lf overrides autocrlf so every checkout gets LF
+# regardless of the developer's git config, keeping rustfmt output stable and
+# the parent workspace's `cargo fmt --all --check` gate green across machines.
+* text=auto eol=lf
+
+# Shell scripts must always be LF (explicit belt-and-suspenders).
+*.sh text eol=lf
