@@ -53,10 +53,7 @@ impl Message {
     }
 
     pub fn is_close(&self) -> bool {
-        match self {
-            Message::Close(_) => true,
-            _ => false,
-        }
+        matches!(self, Message::Close(_))
     }
 }
 
@@ -74,16 +71,16 @@ impl From<TungsteniteMessage> for Message {
     }
 }
 
-impl Into<AxumMessage> for Message {
-    fn into(self) -> AxumMessage {
-        match self {
+impl From<Message> for AxumMessage {
+    fn from(val: Message) -> Self {
+        match val {
             Message::Text(text) => AxumMessage::Text(text.into()),
             Message::Binary(data) => AxumMessage::Binary(data.into()),
             Message::Ping(data) => AxumMessage::Ping(data.into()),
             Message::Pong(data) => AxumMessage::Pong(data.into()),
             Message::Close(frame) => {
                 let frame = frame.map(|(code, reason)| axum::extract::ws::CloseFrame {
-                    code: code.into(),
+                    code,
                     reason: reason.into(),
                 });
                 AxumMessage::Close(frame)
@@ -93,9 +90,9 @@ impl Into<AxumMessage> for Message {
 }
 
 // // MyWebSocketMessage -> TungsteniteMessage
-impl Into<TungsteniteMessage> for Message {
-    fn into(self) -> TungsteniteMessage {
-        match self {
+impl From<Message> for TungsteniteMessage {
+    fn from(val: Message) -> Self {
+        match val {
             Message::Text(text) => TungsteniteMessage::Text(text.into()),
             Message::Binary(data) => TungsteniteMessage::Binary(data.into()),
             Message::Ping(data) => TungsteniteMessage::Ping(data.into()),
@@ -144,6 +141,8 @@ impl ConnectParams {
         Ok(self)
     }
 
+    #[allow(clippy::should_implement_trait)]
+    // This constructor returns anyhow::Result and is used as a crate API; changing it would ripple through callers.
     pub fn from_str(url: &str) -> anyhow::Result<Self> {
         Ok(Self {
             url: Url::from_str(url)?,
@@ -216,7 +215,7 @@ impl Eject {
         Self {
             sendping: RwLock::new(now),
             recvping: RwLock::new(now),
-            timeout: timeout,
+            timeout,
         }
     }
 
@@ -247,7 +246,7 @@ impl Eject {
         Message::Ping(payload)
     }
 
-    pub async fn update_pong(&self, payload: &Vec<u8>) -> anyhow::Result<()> {
+    pub async fn update_pong(&self, payload: &[u8]) -> anyhow::Result<()> {
         let ping_millis: i64 = postcard::from_bytes(payload)?;
         if self.sendping.read().await.timestamp_millis() == ping_millis {
             *self.recvping.write().await = Utc::now();
@@ -336,24 +335,24 @@ impl ConnectionReal {
         let (sender, receiver) = unbounded_channel::<Message>();
 
         let uuid = uuid::Uuid::new_v4();
-        let eject = Arc::new(Eject::new(param.get_pong_timeout().clone()));
+        let eject = Arc::new(Eject::new(*param.get_pong_timeout()));
         let is_connected = Arc::new(RwLock::new(true));
         let ws = Arc::from(Self {
-            uuid: uuid,
+            uuid,
             created: Utc::now(),
 
-            param: param,
+            param,
             sender: sender.clone(),
             eject: eject.clone(),
             is_connected: is_connected.clone(),
         });
 
         let ctx = (
-            uuid.clone(),
+            uuid,
             is_connected.clone(),
             sender,
             eject,
-            ws.get_param().get_ping_interval().clone(),
+            *ws.get_param().get_ping_interval(),
         );
         tokio::spawn(async move {
             let (uuid, is_connected, sender, eject, ping_interval) = ctx;
@@ -393,7 +392,7 @@ impl ConnectionReal {
             cassry::info!("ping loop ended : {}", uuid.to_string());
         });
 
-        let ctx = (uuid.clone(), receiver, write_half, is_connected);
+        let ctx = (uuid, receiver, write_half, is_connected);
         tokio::spawn(async move {
             let (uuid, mut receiver, mut write_half, is_connected) = ctx;
             cassry::info!("sender loop started : {}", uuid.to_string());
@@ -451,13 +450,8 @@ impl ConnectionReal {
                         })
                         .unwrap_or_else(|e| Signal::Error(e.into()));
 
-                    match &signal {
-                        Signal::Received(message) => {
-                            if let Message::Pong(payload) = message {
-                                let _ = ptr.eject.update_pong(payload).await;
-                            }
-                        }
-                        _ => {}
+                    if let Signal::Received(Message::Pong(payload)) = &signal {
+                        let _ = ptr.eject.update_pong(payload).await;
                     }
 
                     callback(ptr, signal).await;
@@ -538,7 +532,7 @@ impl ConnectionNull {
         let uuid = uuid::Uuid::new_v4();
         Arc::new(ConnectionNull {
             created: now,
-            uuid: uuid,
+            uuid,
             eject: Eject::new(chrono::Duration::seconds(5)),
         })
     }
@@ -577,10 +571,7 @@ pub struct Websocket {
 
 impl Websocket {
     fn new(param: Arc<WebsocketParams>, conn: Arc<dyn ConnectionItf>) -> Self {
-        Self {
-            conn: conn,
-            param: param,
-        }
+        Self { conn, param }
     }
 
     pub fn accept<F, Fut>(param: AcceptParams, stream: AxumWebsocket, f: F) -> anyhow::Result<Self>
@@ -671,7 +662,7 @@ impl Websocket {
     }
 
     pub fn get_created(&self) -> DateTime<Utc> {
-        self.conn.get_created().clone()
+        *self.conn.get_created()
     }
 
     pub fn get_uuid(&self) -> &uuid::Uuid {

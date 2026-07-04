@@ -15,7 +15,7 @@ use derive_more::{Deref, Display, From, Into};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, FromInto, TimestampMilliSeconds, TimestampSeconds};
-use std::{sync::Arc, u64};
+use std::sync::Arc;
 use tower_cookies::{Cookie, Cookies};
 use uuid::Uuid;
 
@@ -32,9 +32,9 @@ mod _private {
         }
     }
 
-    impl Into<ClaimsKey> for ClaimsKeyCompactor {
-        fn into(self) -> ClaimsKey {
-            ClaimsKey(self.0)
+    impl From<ClaimsKeyCompactor> for ClaimsKey {
+        fn from(val: ClaimsKeyCompactor) -> Self {
+            ClaimsKey(val.0)
         }
     }
 }
@@ -43,6 +43,12 @@ mod _private {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Display, From, Into, Deref)]
 #[display("{}", _0)]
 pub struct ClaimsKey(#[serde_as(as = "DisplayFromStr")] uuid::Uuid);
+impl Default for ClaimsKey {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClaimsKey {
     pub fn new() -> Self {
         Self(uuid::Uuid::now_v7())
@@ -63,9 +69,9 @@ impl UidKey {
     }
 }
 
-impl Into<String> for UidKey {
-    fn into(self) -> String {
-        self.0.to_string()
+impl From<UidKey> for String {
+    fn from(val: UidKey) -> Self {
+        val.0.to_string()
     }
 }
 
@@ -194,31 +200,29 @@ where
 {
     type Rejection = HttpError;
 
-    fn from_request_parts(
+    async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &S,
-    ) -> impl core::future::Future<Output = Result<Self, Self::Rejection>> {
-        async move {
-            let cookies = parts
-                .extensions
-                .get::<tower_cookies::Cookies>()
-                .ok_or(HttpError::MissingJwtToken)?;
-            let jwt_manager = parts
-                .extensions
-                .get::<TokenIssuer>()
-                .ok_or(anyhow::anyhow!("JwtManager not found"))?;
+    ) -> Result<Self, Self::Rejection> {
+        let cookies = parts
+            .extensions
+            .get::<tower_cookies::Cookies>()
+            .ok_or(HttpError::MissingJwtToken)?;
+        let jwt_manager = parts
+            .extensions
+            .get::<TokenIssuer>()
+            .ok_or(anyhow::anyhow!("JwtManager not found"))?;
 
-            let mut validation = Validation::default();
-            validation.validate_exp = false;
-            let claims = jwt_manager
-                .extract_access_claims_with_csrf_headers(cookies, &parts.headers, Some(validation))
-                .await?;
-            if chrono::Utc::now() > claims.exp {
-                return Err(HttpError::ExpiredJwt);
-            }
-
-            Ok(claims)
+        let mut validation = Validation::default();
+        validation.validate_exp = false;
+        let claims = jwt_manager
+            .extract_access_claims_with_csrf_headers(cookies, &parts.headers, Some(validation))
+            .await?;
+        if chrono::Utc::now() > claims.exp {
+            return Err(HttpError::ExpiredJwt);
         }
+
+        Ok(claims)
     }
 }
 
@@ -342,8 +346,10 @@ impl JwtIssuer {
             .get_key()
             .await
             .ok_or(anyhow::anyhow!("Key not found"))?;
-        let mut header = jsonwebtoken::Header::default();
-        header.kid = Some(key);
+        let header = jsonwebtoken::Header {
+            kid: Some(key),
+            ..Default::default()
+        };
         let jwt = jsonwebtoken::encode(
             &header,
             claims,
@@ -444,7 +450,7 @@ impl TokenIssuerImpl {
     }
 
     pub async fn insert_block(&self, jti: &Uuid) {
-        self.blocked_refreshs.insert(jti.clone(), ()).await;
+        self.blocked_refreshs.insert(*jti, ()).await;
     }
 
     pub fn contains_block(&self, jti: &Uuid) -> bool {
@@ -603,7 +609,7 @@ impl TokenIssuerImpl {
             mutable: SasRefreshmutable {
                 failed: 0,
                 ip: client_ip,
-                user_agent: user_agent,
+                user_agent,
                 updated_at: now,
             }
             .into(),
@@ -635,11 +641,11 @@ impl TokenIssuer {
     }
 
     pub async fn get_access_ttl(&self) -> chrono::Duration {
-        self.isser.get_access_ttl().clone()
+        *self.isser.get_access_ttl()
     }
 
     pub async fn get_refresh_ttl(&self) -> chrono::Duration {
-        self.isser.get_refresh_ttl().clone()
+        *self.isser.get_refresh_ttl()
     }
 
     pub async fn insert_key(&self, key: DateTime<Local>, origin: &str) -> anyhow::Result<()> {
@@ -663,16 +669,13 @@ impl TokenIssuer {
         session_timeout: chrono::Duration,
     ) -> Self {
         Self {
-            isser: Arc::new(
-                TokenIssuerImpl::new(
-                    name,
-                    access_secret,
-                    access_ttl,
-                    refresh_ttl,
-                    session_timeout,
-                )
-                .into(),
-            ),
+            isser: Arc::new(TokenIssuerImpl::new(
+                name,
+                access_secret,
+                access_ttl,
+                refresh_ttl,
+                session_timeout,
+            )),
         }
     }
 
@@ -705,7 +708,7 @@ impl TokenIssuer {
             .isser
             .verify_jwt_access(access_token.value(), validation)
             .await
-            .map_err(|e| HttpError::InvalidJwt(e))?;
+            .map_err(HttpError::InvalidJwt)?;
         Ok(access_claims)
     }
 
@@ -722,7 +725,7 @@ impl TokenIssuer {
             .isser
             .verify_jwt_access_with_csrf(access_token.value(), csrf, validation)
             .await
-            .map_err(|e| HttpError::InvalidJwt(e))?;
+            .map_err(HttpError::InvalidJwt)?;
         Ok(access_claims)
     }
 

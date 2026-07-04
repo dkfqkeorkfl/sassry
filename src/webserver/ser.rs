@@ -7,9 +7,9 @@ use std::net::IpAddr;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayerIP(#[serde_as(as = "DisplayFromStr")] IpAddr);
 
-impl Into<ClientIp> for DisplayerIP {
-    fn into(self) -> ClientIp {
-        ClientIp(self.0)
+impl From<DisplayerIP> for ClientIp {
+    fn from(val: DisplayerIP) -> Self {
+        ClientIp(val.0)
     }
 }
 

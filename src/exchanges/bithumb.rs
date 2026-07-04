@@ -83,7 +83,7 @@ impl Default for RestAPI {
         specific_pp_precision.insert("USDT-WLD".to_string(), float::to_decimal("0.001").unwrap());
         let specific_pp_precision = specific_pp_precision
             .iter()
-            .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(precision.clone())))
+            .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(*precision)))
             .collect::<HashMap<_, _>>();
 
         let mut specific_ap_precision = HashMap::new();
@@ -104,13 +104,13 @@ impl Default for RestAPI {
         );
         let specific_ap_precision = specific_ap_precision
             .iter()
-            .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(precision.clone())))
+            .map(|(symbol, precision)| (symbol.to_string(), PrecisionKind::Tick(*precision)))
             .collect::<HashMap<_, _>>();
 
         RestAPI {
             pp_kind_krw: PrecisionKind::RangeTick(ranges.into()),
-            specific_ap_precision: specific_ap_precision,
-            specific_pp_precision: specific_pp_precision,
+            specific_ap_precision,
+            specific_pp_precision,
         }
     }
 }
@@ -204,18 +204,18 @@ impl RestAPI {
         };
 
         let order = Order {
-            ptime: ptime,
+            ptime,
             oid: order_id.to_string(),
             cid: Default::default(),
 
             kind: okind,
-            price: price,
-            amount: amount,
-            side: side,
+            price,
+            amount,
+            side,
 
-            fee: fee,
-            state: state,
-            avg: avg,
+            fee,
+            state,
+            avg,
             proceed,
             is_postonly: false,
             is_reduce: false,
@@ -319,7 +319,7 @@ impl exchange::RestApiTrait for RestAPI {
                         .ok_or(anyhowln!("Data for the canceled order cannot be found."))?;
 
                     let mut new_order = order.as_ref().clone();
-                    new_order.state = OrderState::Canceling(ptime.recvtime.clone());
+                    new_order.state = OrderState::Canceling(ptime.recvtime);
                     new_order.ptime = ptime;
                     ret.success.insert_raw(new_order);
                 }
@@ -385,7 +385,7 @@ impl exchange::RestApiTrait for RestAPI {
 
                     let mut order = Order::from_order_param(param);
                     order.oid = oid;
-                    order.state = OrderState::Ordering(created_at.clone());
+                    order.state = OrderState::Ordering(created_at);
                     order.detail = root;
                     order.ptime = ptime;
                     order.created = created_at;
@@ -393,8 +393,11 @@ impl exchange::RestApiTrait for RestAPI {
                 }
                 Err(e) => {
                     let text = e.to_string();
-                    let re = regex::Regex::new(r"제출된 주문ID: \[(.*?)\]").unwrap();
-                    if let Some(caps) = re.captures(&text) {
+                    static FORCED_CANCELLATION_RE: std::sync::LazyLock<regex::Regex> =
+                        std::sync::LazyLock::new(|| {
+                            regex::Regex::new(r"제출된 주문ID: \[(.*?)\]").unwrap()
+                        });
+                    if let Some(caps) = FORCED_CANCELLATION_RE.captures(&text) {
                         cassry::error!("[bithumb] Forced cancellation : {}", text);
                         let mut os = OrderSet::new(
                             util::datetime_epoch_first().into(),
@@ -617,7 +620,7 @@ impl exchange::RestApiTrait for RestAPI {
 
             let asset = Asset {
                 ptime: assets.get_packet_time().clone(),
-                updated: assets.get_packet_time().recvtime.clone(),
+                updated: assets.get_packet_time().recvtime,
                 currency: currency.to_string(),
                 free: total - locked,
                 lock: locked,
@@ -800,19 +803,19 @@ impl exchange::RestApiTrait for RestAPI {
                 ptime: packet.clone(),
                 updated: Utc::now(),
                 market_id: market_id.clone(),
-                state: state,
+                state,
 
                 quote_currency: quote.to_uppercase(),
                 base_currency: base.to_uppercase(),
                 contract_size: Decimal::ONE,
-                fee: fee,
+                fee,
                 amount_limit: [
                     CurrencyPair::new_quote(least),
                     CurrencyPair::new_base(Decimal::MAX),
                 ],
                 price_limit: [Decimal::ZERO, Decimal::MAX],
-                pp_kind: pp_kind,
-                ap_kind: ap_kind,
+                pp_kind,
+                ap_kind,
                 detail: root,
             };
 
@@ -833,7 +836,7 @@ struct OrderProceed {
 impl OrderProceed {
     pub fn new(order: Option<Order>) -> Self {
         Self {
-            order: order,
+            order,
             excute_fund: Decimal::ZERO,
             excute_volume: Decimal::ZERO,
             fee: Decimal::ZERO,
@@ -872,7 +875,7 @@ impl WebsocketItf {
 
                     let asset = Asset {
                         ptime: time.into(),
-                        updated: updated.clone(),
+                        updated,
                         currency: currency.clone(),
                         free: total - locked,
                         lock: locked,
@@ -938,7 +941,7 @@ impl WebsocketItf {
                             OrderSide::Sell
                         };
 
-                    let order = Order {
+                    Order {
                         ptime: PacketTime::from_sendtime(&time),
                         updated: time,
                         oid: oid.to_string(),
@@ -946,17 +949,16 @@ impl WebsocketItf {
                         kind: OrderKind::Limit,
                         price: float::to_decimal_with_json(&root["p"])?,
                         amount: float::to_decimal_with_json(&root["v"])?,
-                        side: side,
+                        side,
                         is_postonly: false,
                         is_reduce: false,
                         state: state.clone(),
-                        avg: avg,
+                        avg,
                         proceed: CurrencyPair::new_base(proceed.excute_volume),
                         fee: CurrencyPair::new_quote(proceed.fee),
                         created: Utc.timestamp_millis_opt(created).unwrap(),
                         detail: root.take(),
-                    };
-                    order
+                    }
                 };
 
                 let remained_volume = float::to_decimal_with_json(&order.detail["rv"])?;
@@ -1038,7 +1040,7 @@ impl WebsocketItf {
                 let mut orderbook = OrderBook::new(
                     PacketTime::from_sendtime(&time),
                     MarketVal::Symbol(MarketID::Spot(symbol.to_string())),
-                    time.clone(),
+                    time,
                 );
 
                 for item in root["obu"]
@@ -1147,8 +1149,7 @@ impl WebsocketItf {
         let num = match quantity {
             SubscribeQuantity::Much => 30,
             SubscribeQuantity::Least(str) | SubscribeQuantity::Fixed(str) => {
-                let parsed = str.parse::<usize>()?;
-                parsed
+                str.parse::<usize>()?
             }
             _ => 1,
         };
@@ -1252,23 +1253,19 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
     ) -> anyhow::Result<SubscribeResult> {
         let result = match signal {
             Signal::Opened => SubscribeResult::Authorized(true),
-            Signal::Received(data) => match data {
-                Message::Binary(data) => {
-                    let text = String::from_utf8_lossy(data.as_slice()).to_string();
-                    let json: serde_json::Value = serde_json::from_str(text.as_str())?;
-                    let ty = json["ty"]
-                        .as_str()
-                        .ok_or(anyhowln!("invalid type"))?
-                        .to_string();
-                    let result = match ty.as_str() {
-                        "myAsset" | "myOrder" => self.parse_private(ty.as_str(), json).await,
-                        "orderbook" => self.parse_public(ty.as_str(), json).await,
-                        _ => Err(anyhowln!("unknown type: {}", ty)),
-                    }?;
-                    result
-                }
-                _ => SubscribeResult::None,
-            },
+            Signal::Received(Message::Binary(data)) => {
+                let text = String::from_utf8_lossy(data.as_slice()).to_string();
+                let json: serde_json::Value = serde_json::from_str(text.as_str())?;
+                let ty = json["ty"]
+                    .as_str()
+                    .ok_or(anyhowln!("invalid type"))?
+                    .to_string();
+                match ty.as_str() {
+                    "myAsset" | "myOrder" => self.parse_private(ty.as_str(), json).await,
+                    "orderbook" => self.parse_public(ty.as_str(), json).await,
+                    _ => Err(anyhowln!("unknown type: {}", ty)),
+                }?
+            }
             _ => SubscribeResult::None,
         };
 
@@ -1278,7 +1275,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
     async fn make_websocket_param(
         &self,
         ctx: &ExchangeContextPtr,
-        group: &String,
+        group: &str,
         _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<ConnectParams> {
         let mut params = ctx.param.websocket.clone();

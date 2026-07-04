@@ -109,7 +109,7 @@ impl OrderSide {
     }
 
     pub fn is_sell(&self) -> bool {
-        self.is_buy() == false
+        !self.is_buy()
     }
 }
 
@@ -302,7 +302,7 @@ impl PrecisionKind {
             return Ok(val - (tick * Decimal::from(lvl)));
         }
 
-        return PrecisionKind::calculate_with_range_impl(&range[idx].0, side, fixed_lvl, range);
+        PrecisionKind::calculate_with_range_impl(&range[idx].0, side, fixed_lvl, range)
     }
 
     pub fn calculate_with_range(
@@ -345,7 +345,7 @@ impl PrecisionKind {
             weight.floor()
         } * tick;
 
-        return PrecisionKind::calculate_with_range_impl(&fixed, side, lvl as u64, range);
+        PrecisionKind::calculate_with_range_impl(&fixed, side, lvl as u64, range)
     }
 
     pub fn calculate_with_tick(
@@ -370,7 +370,7 @@ impl PrecisionKind {
         } else {
             -lvl
         });
-        return Ok(fixed + (tick * d));
+        Ok(fixed + (tick * d))
     }
 
     pub fn calculate_price(
@@ -440,53 +440,47 @@ pub enum OrderState {
 
 impl OrderState {
     pub fn is_process(&self) -> bool {
-        match self {
+        matches!(
+            self,
             OrderState::Ordering(_)
-            | OrderState::Opened
-            | OrderState::PartiallyFilled
-            | OrderState::Canceling(_) => true,
-            _ => false,
-        }
+                | OrderState::Opened
+                | OrderState::PartiallyFilled
+                | OrderState::Canceling(_)
+        )
     }
     pub fn is_cancelled(&self) -> bool {
-        match self {
-            OrderState::Rejected | OrderState::Cancelled => true,
-            _ => false,
-        }
+        matches!(self, OrderState::Rejected | OrderState::Cancelled)
     }
     pub fn is_done(&self) -> bool {
-        match self {
-            OrderState::Filled => true,
-            _ => false,
-        }
+        matches!(self, OrderState::Filled)
     }
 
     pub fn synchronizable(&self) -> bool {
-        match self {
-            OrderState::Rejected | OrderState::Cancelled | OrderState::Filled => false,
-            _ => true,
-        }
+        !matches!(
+            self,
+            OrderState::Rejected | OrderState::Cancelled | OrderState::Filled
+        )
     }
 
     pub fn cancelable(&self) -> bool {
-        match self {
-            OrderState::Ordering(_) | OrderState::Opened | OrderState::PartiallyFilled => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            OrderState::Ordering(_) | OrderState::Opened | OrderState::PartiallyFilled
+        )
     }
 
     pub fn get_created(&self) -> Option<&DateTime<Utc>> {
         match self {
-            OrderState::Ordering(created) | OrderState::Canceling(created) => Some(&created),
+            OrderState::Ordering(created) | OrderState::Canceling(created) => Some(created),
             _ => None,
         }
     }
 
     pub fn is_ordering_or_canceling(&self) -> bool {
-        match self {
-            OrderState::Ordering(_created) | OrderState::Canceling(_created) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            OrderState::Ordering(_created) | OrderState::Canceling(_created)
+        )
     }
     pub fn is_expired(&self, expired: &chrono::Duration) -> bool {
         if let Some(created) = self.get_created() {
@@ -506,7 +500,7 @@ pub struct PacketTime {
 impl From<DateTime<Utc>> for PacketTime {
     fn from(dt: DateTime<Utc>) -> Self {
         PacketTime {
-            sendtime: dt.clone(),
+            sendtime: dt,
             recvtime: dt, // 현재 시간으로 recvtime 설정
         }
     }
@@ -524,14 +518,14 @@ impl Default for PacketTime {
 impl PacketTime {
     pub fn new(time: &chrono::DateTime<Utc>) -> Self {
         Self {
-            sendtime: time.clone(),
-            recvtime: time.clone(),
+            sendtime: *time,
+            recvtime: *time,
         }
     }
 
     pub fn from_sendtime(time: &chrono::DateTime<Utc>) -> Self {
         Self {
-            sendtime: time.clone(),
+            sendtime: *time,
             recvtime: Utc::now(),
         }
     }
@@ -588,49 +582,31 @@ pub struct CurrencyPair(CurrencySide, Decimal);
 
 impl CurrencyPair {
     pub fn new(c: CurrencySide, v: Decimal) -> Self {
-        CurrencyPair { 0: c, 1: v }
+        CurrencyPair(c, v)
     }
 
     pub fn new_base(v: Decimal) -> Self {
-        CurrencyPair {
-            0: CurrencySide::Base,
-            1: v,
-        }
+        CurrencyPair(CurrencySide::Base, v)
     }
 
     pub fn new_quote(v: Decimal) -> Self {
-        CurrencyPair {
-            0: CurrencySide::Quote,
-            1: v,
-        }
+        CurrencyPair(CurrencySide::Quote, v)
     }
 
     pub fn quote_max() -> Self {
-        CurrencyPair {
-            0: CurrencySide::Quote,
-            1: Decimal::MAX,
-        }
+        CurrencyPair(CurrencySide::Quote, Decimal::MAX)
     }
 
     pub fn quote_zero() -> Self {
-        CurrencyPair {
-            0: CurrencySide::Quote,
-            1: Decimal::ZERO,
-        }
+        CurrencyPair(CurrencySide::Quote, Decimal::ZERO)
     }
 
     pub fn base_max() -> Self {
-        CurrencyPair {
-            0: CurrencySide::Base,
-            1: Decimal::MAX,
-        }
+        CurrencyPair(CurrencySide::Base, Decimal::MAX)
     }
 
     pub fn base_zero() -> Self {
-        CurrencyPair {
-            0: CurrencySide::Base,
-            1: Decimal::ZERO,
-        }
+        CurrencyPair(CurrencySide::Base, Decimal::ZERO)
     }
 }
 
@@ -689,8 +665,8 @@ where
 
     pub fn new(ptime: PacketTime, utype: UpdateType) -> Self {
         DataSet {
-            utype: utype,
-            ptime: ptime,
+            utype,
+            ptime,
             datas: HashMap::<Key, Arc<Value>>::default(),
             cursor: CursorType::None,
         }
@@ -699,9 +675,9 @@ where
     pub fn new_with_cursor(ptime: PacketTime, cursor: CursorType) -> Self {
         DataSet {
             utype: UpdateType::Partial,
-            ptime: ptime,
+            ptime,
             datas: HashMap::<Key, Arc<Value>>::default(),
-            cursor: cursor,
+            cursor,
         }
     }
 
@@ -808,9 +784,9 @@ impl MarketSetBuilder {
     }
 }
 
-impl Into<DataSet<Market, MarketID>> for MarketSetBuilder {
-    fn into(self) -> DataSet<Market, MarketID> {
-        self.markets
+impl From<MarketSetBuilder> for DataSet<Market, MarketID> {
+    fn from(val: MarketSetBuilder) -> Self {
+        val.markets
     }
 }
 
@@ -878,17 +854,11 @@ impl MarketVal {
     }
 
     pub fn has(&self) -> bool {
-        match self {
-            MarketVal::None => false,
-            _ => true,
-        }
+        !matches!(self, MarketVal::None)
     }
 
     pub fn is_ptr(&self) -> bool {
-        match self {
-            MarketVal::Pointer(_ptr) => true,
-            _ => false,
-        }
+        matches!(self, MarketVal::Pointer(_ptr))
     }
     pub fn market_ptr(&self) -> Option<&MarketPtr> {
         match self {
@@ -986,8 +956,8 @@ where
 {
     pub fn new(ptime: PacketTime, market: MarketVal) -> Self {
         DataSetWithMarket {
-            ptime: ptime,
-            market: market,
+            ptime,
+            market,
             datas: HashMap::<Key, Arc<Value>>::default(),
             cursor: CursorType::None,
         }
@@ -995,10 +965,10 @@ where
 
     pub fn new_with_cursor(ptime: PacketTime, market: MarketVal, cursor: CursorType) -> Self {
         DataSetWithMarket {
-            ptime: ptime,
-            market: market,
+            ptime,
+            market,
             datas: HashMap::<Key, Arc<Value>>::default(),
-            cursor: cursor,
+            cursor,
         }
     }
 
@@ -1017,6 +987,10 @@ where
 
     pub fn len(&self) -> usize {
         self.datas.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.datas.is_empty()
     }
 
     pub fn filter_new<P>(&self, mut predicate: P) -> (Self, HashMap<Key, Arc<Value>>)
@@ -1192,8 +1166,8 @@ impl OrderBook {
     pub fn new(time: PacketTime, market: MarketVal, updated: DateTime<Utc>) -> Self {
         OrderBook {
             ptime: time,
-            updated: updated,
-            market: market,
+            updated,
+            market,
             ask: Default::default(),
             bid: Default::default(),
             detail: serde_json::Value::default(),
@@ -1250,7 +1224,7 @@ impl OrderBook {
         let mut total = Decimal::ZERO;
         for (i, (price_raw, amount_raw)) in quotes.iter().enumerate().map(|(i, q)| (i, q.as_ref()))
         {
-            if remains.len() == 0 {
+            if remains.is_empty() {
                 break;
             }
 
@@ -1265,18 +1239,13 @@ impl OrderBook {
                 }
             }?;
 
-            loop {
-                let completed =
-                    if let Some(remain) = remains.front_mut().filter(|_v| !amount.is_zero()) {
-                        let min = amount.min(*remain);
-                        amount -= min;
-                        *remain -= min;
-                        acc += price * min;
-                        total += min;
-                        remain.is_zero()
-                    } else {
-                        break;
-                    };
+            while let Some(remain) = remains.front_mut().filter(|_v| !amount.is_zero()) {
+                let min = amount.min(*remain);
+                amount -= min;
+                *remain -= min;
+                acc += price * min;
+                total += min;
+                let completed = remain.is_zero();
 
                 if completed {
                     remains.pop_front();
@@ -1327,7 +1296,7 @@ impl OrderBook {
             OrderBookSide::Ask => {
                 util::async_binary_search(quotes, |item| {
                     let cloned_item = item.clone();
-                    let cloned_price = newer_price.clone();
+                    let cloned_price = newer_price;
                     async move {
                         let price = cloned_item.0.number().await.unwrap();
                         cloned_price.cmp(&price)
@@ -1339,7 +1308,7 @@ impl OrderBook {
             OrderBookSide::Bid => {
                 util::async_binary_search(quotes, |item| {
                     let cloned_item = item.clone();
-                    let cloned_price = newer_price.clone();
+                    let cloned_price = newer_price;
                     async move {
                         let price = cloned_item.0.number().await.unwrap();
                         price.cmp(&cloned_price)
@@ -1420,8 +1389,8 @@ impl PublicTradeSet {
 
     pub fn new(ptime: PacketTime, market: MarketVal, limit: Option<usize>) -> Self {
         PublicTradeSet {
-            ptime: ptime,
-            market: market,
+            ptime,
+            market,
             datas: VecDeque::<PublicTradePtr>::default(),
             limit: limit.unwrap_or(usize::MAX),
         }
@@ -1549,11 +1518,11 @@ impl Order {
             cid: param.cid.clone(),
 
             kind: param.kind.clone(),
-            price: param.price.clone(),
-            amount: param.amount.clone(),
+            price: param.price,
+            amount: param.amount,
             side: param.side.clone(),
-            is_postonly: param.is_postonly.clone(),
-            is_reduce: param.is_reduce.clone(),
+            is_postonly: param.is_postonly,
+            is_reduce: param.is_reduce,
 
             state: OrderState::default(),
             fee: CurrencyPair::default(),
@@ -1576,19 +1545,19 @@ impl Order {
         }
 
         if self.proceed.0 == CurrencySide::Base {
-            self.proceed.1.clone()
+            self.proceed.1
         } else {
             self.proceed.1 / self.avg
         }
     }
 
     pub fn proceed_real(&self) -> Decimal {
-        self.proceed.1.clone()
+        self.proceed.1
     }
 
     pub fn proceed_quote(&self) -> Decimal {
         if self.proceed.0 == CurrencySide::Quote {
-            self.proceed.1.clone()
+            self.proceed.1
         } else {
             self.proceed.1 * self.avg
         }
@@ -1815,8 +1784,7 @@ impl MASubscribeBuilder {
 
     pub fn build(self) -> SubscribeParam {
         let mut ret = serde_json::Value::default();
-        if self.market.is_some() {
-            let market = self.market.unwrap();
+        if let Some(market) = self.market {
             ret["market"] =
                 serde_json::Value::from(serde_json::to_string(&market.market_id).unwrap());
             ret["symbol"] = serde_json::Value::from(market.market_id.symbol());
@@ -2019,15 +1987,15 @@ impl ExchangeContext {
             positions: RwLock::new(Default::default()).into(),
             assets: RwLock::new(Default::default()).into(),
             orders: cache::LfuCache::<String, (OrderPtr, MarketPtr)>::new(
-                param.config.opt_max_order_chche.clone(),
+                param.config.opt_max_order_chche,
             ),
         };
 
         ExchangeContext {
-            param: param,
-            storage: storage,
-            requester: requester,
-            recorder: recorder,
+            param,
+            storage,
+            requester,
+            recorder,
         }
     }
 
@@ -2088,7 +2056,7 @@ impl ExchangeContext {
 
             result
         } else {
-            let opt = self.load_db_order(oid.as_str(), &kind).await?;
+            let opt = self.load_db_order(oid.as_str(), kind).await?;
             if opt.is_none() {
                 return Ok(None);
             }
@@ -2168,7 +2136,7 @@ impl ExchangeContext {
                         .await
                         .ok_or(anyhowln!("invalid market"))?;
 
-                    for (_oid, order) in value.get_datas() {
+                    for order in value.get_datas().values() {
                         self.cache_order(Arc::new((order.clone(), market.clone())))
                             .await?;
                     }

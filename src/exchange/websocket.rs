@@ -34,7 +34,7 @@ pub trait ExchangeSocketTrait: Send + Sync {
     async fn make_websocket_param(
         &self,
         context: &ExchangeContextPtr,
-        group: &String,
+        group: &str,
         request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<ConnectParams>;
 
@@ -48,7 +48,7 @@ pub trait ExchangeSocketTrait: Send + Sync {
         };
 
         if let Some(j) = json {
-            let str = format!("{}:{}", param.ty.clone() as u32, j.to_string());
+            let str = format!("{}:{}", param.ty.clone() as u32, j);
             return Some(("".to_string(), str));
         }
 
@@ -71,11 +71,11 @@ type ConnectionRwArc = RwArc<Connection>;
 impl Connection {
     pub fn new(group: String, websocket: Websocket) -> Self {
         Self {
-            group: group,
+            group,
             is_authorized: false,
             subscribes: Default::default(),
 
-            websocket: websocket,
+            websocket,
 
             lastcheck: Utc::now(),
             retryed: 0,
@@ -137,72 +137,69 @@ impl Inner {
             .parse_msg(&self.context, websocket.clone(), signal)
             .await?;
 
-        match &result {
-            SubscribeResult::Authorized(success) => {
-                let uuid = websocket.get_uuid();
+        if let SubscribeResult::Authorized(success) = &result {
+            let uuid = websocket.get_uuid();
 
-                cassry::info!(
-                    "authorized websocket(uuid:{}, url:{})",
-                    uuid,
-                    websocket.get_connected_url_str().unwrap_or_default()
-                );
+            cassry::info!(
+                "authorized websocket(uuid:{}, url:{})",
+                uuid,
+                websocket.get_connected_url_str().unwrap_or_default()
+            );
 
-                if let Some(conn) = self.find_websocket_by_id(&uuid).await {
-                    if *success == false {
-                        cassry::error!(
-                            "rejected authorize websocket(uuid:{}, url:{})",
-                            uuid,
-                            websocket.get_connected_url_str().unwrap_or_default()
-                        );
-                        websocket.close(None).await?;
-                    }
-
-                    let mut conn = conn.write().await;
-                    if conn.is_authorized == true {
-                        cassry::warn!(
-                            "websocket is already authorized(uuid:{}, url:{})",
-                            uuid,
-                            websocket.get_connected_url_str().unwrap_or_default()
-                        );
-                    }
-                    conn.is_authorized = *success;
-                    if !conn.subscribes.is_empty() {
-                        let subs = conn
-                            .subscribes
-                            .iter()
-                            .map(|(key, value)| {
-                                format!(
-                                    "({:?}:{})",
-                                    key,
-                                    value
-                                        .iter()
-                                        .map(|v| v.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(",")
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        cassry::info!(
-                            "trying to subscribes by stored list(uuid:{}, url:{}): {}",
-                            uuid,
-                            websocket.get_connected_url_str().unwrap_or_default(),
-                            subs
-                        );
-                        self.interface
-                            .subscribe(&self.context, websocket, &None, &conn.subscribes)
-                            .await?;
-                    }
-                } else {
+            if let Some(conn) = self.find_websocket_by_id(uuid).await {
+                if !*success {
                     cassry::error!(
-                        "cannot find subscribing list by id(uuid:{}, url:{})",
+                        "rejected authorize websocket(uuid:{}, url:{})",
                         uuid,
                         websocket.get_connected_url_str().unwrap_or_default()
                     );
                     websocket.close(None).await?;
                 }
+
+                let mut conn = conn.write().await;
+                if conn.is_authorized {
+                    cassry::warn!(
+                        "websocket is already authorized(uuid:{}, url:{})",
+                        uuid,
+                        websocket.get_connected_url_str().unwrap_or_default()
+                    );
+                }
+                conn.is_authorized = *success;
+                if !conn.subscribes.is_empty() {
+                    let subs = conn
+                        .subscribes
+                        .iter()
+                        .map(|(key, value)| {
+                            format!(
+                                "({:?}:{})",
+                                key,
+                                value
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    cassry::info!(
+                        "trying to subscribes by stored list(uuid:{}, url:{}): {}",
+                        uuid,
+                        websocket.get_connected_url_str().unwrap_or_default(),
+                        subs
+                    );
+                    self.interface
+                        .subscribe(&self.context, websocket, &None, &conn.subscribes)
+                        .await?;
+                }
+            } else {
+                cassry::error!(
+                    "cannot find subscribing list by id(uuid:{}, url:{})",
+                    uuid,
+                    websocket.get_connected_url_str().unwrap_or_default()
+                );
+                websocket.close(None).await?;
             }
-            _ => {}
         }
 
         Ok(result)
@@ -218,9 +215,9 @@ impl Inner {
         Interface: ExchangeSocketTrait + Default + 'static,
     {
         Arc::new(Inner {
-            context: context,
+            context,
             interface: Arc::new(Interface::default()),
-            callback: callback,
+            callback,
 
             subscribes: Default::default(),
             alived_cnt: Arc::new(RwLock::new(0)),
@@ -230,7 +227,7 @@ impl Inner {
     }
 
     pub async fn insert_connection(&self, conn: Connection) -> RwArc<Connection> {
-        let uuid = conn.websocket.get_uuid().clone();
+        let uuid = *conn.websocket.get_uuid();
         let group = conn.group.clone();
         let ptr = Arc::new(RwLock::new(conn));
         self.connections_by_id
@@ -250,7 +247,7 @@ impl Inner {
     }
 
     pub async fn count_alived(&self) -> usize {
-        self.alived_cnt.read().await.clone()
+        *self.alived_cnt.read().await
     }
 
     pub async fn get_connection_cnt(&self) -> usize {
@@ -279,11 +276,7 @@ impl ExchangeSocket {
             let now = Utc::now();
             let mut conn = value.write().await;
 
-            let penalty = if let Some(v) = 2i32.checked_pow(conn.retryed) {
-                v
-            } else {
-                1
-            };
+            let penalty = 2i32.checked_pow(conn.retryed).unwrap_or(1);
 
             let interval = *checktime * penalty;
             // if eject time is 5, result is 5 10 20 40 80 160 320;
@@ -328,7 +321,7 @@ impl ExchangeSocket {
 
             match ExchangeSocket::make_websocket(&inner, ws_param).await {
                 std::result::Result::Ok(websocket) => {
-                    let uuid = websocket.get_uuid().clone();
+                    let uuid = *websocket.get_uuid();
                     let prev = conn.update_websocket(websocket);
                     cassry::info!(
                         "updated websocket : url({}), group({}), uuid({}->{})",
@@ -384,7 +377,7 @@ impl ExchangeSocket {
             }
         });
 
-        Ok(ExchangeSocket { inner }.into())
+        Ok(ExchangeSocket { inner })
     }
 
     pub async fn is_subscribed(&self, param: &SubscribeParam) -> Option<bool> {
@@ -445,7 +438,9 @@ impl ExchangeSocket {
             }
 
             cassry::info!("success subscribe : {:?}", &param.ty);
-            let (ty, value) = request.unwrap();
+            let (ty, value) = request
+                .clone()
+                .expect("request is initialized above and still needed after subscribe");
             locked.subscribes.entry(ty).or_insert(vec![]).push(value);
         }
 

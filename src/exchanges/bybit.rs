@@ -81,18 +81,18 @@ impl RestAPI {
             .ok_or(anyhowln!("side is invalid"))?;
 
         let order = Order {
-            ptime: ptime,
+            ptime,
             oid: oid.to_string(),
             cid: cid.to_string(),
 
             kind: OrderKind::Limit,
-            price: price,
-            amount: amount,
-            side: side,
+            price,
+            amount,
+            side,
 
             fee: CurrencyPair::default(),
-            state: state,
-            avg: avg,
+            state,
+            avg,
             proceed,
             is_postonly: json["timeInForce"].as_bool().unwrap_or(false),
             is_reduce: json["reduceOnly"].as_bool().unwrap_or(false),
@@ -576,7 +576,7 @@ impl exchange::RestApiTrait for RestAPI {
                 continue;
             }
 
-            let side = if obj["side"].as_str().unwrap().to_string() == "Buy" {
+            let side = if obj["side"].as_str().unwrap() == "Buy" {
                 OrderSide::Buy
             } else {
                 OrderSide::Sell
@@ -657,7 +657,7 @@ impl exchange::RestApiTrait for RestAPI {
             let locked = to_decimal_with_json(&obj["locked"])?;
             let asset = Asset {
                 ptime: assets.get_packet_time().clone(),
-                updated: assets.get_packet_time().recvtime.clone(),
+                updated: assets.get_packet_time().recvtime,
                 currency: currency.clone(),
                 free: total - locked,
                 lock: locked,
@@ -833,7 +833,7 @@ impl exchange::RestApiTrait for RestAPI {
                     pp_kind: PrecisionKind::Tick(ext.pp),
                     ap_kind: PrecisionKind::Tick(ext.ap),
 
-                    updated: packet.recvtime.clone(),
+                    updated: packet.recvtime,
                     detail: item.take(),
                 };
 
@@ -886,14 +886,14 @@ impl WebsocketItf {
                     let proto = Position {
                         ptime: PacketTime::new(&updated_datetime),
                         side: OrderSide::Buy,
-                        avg: avg,
-                        size: size,
-                        unrealised_pnl: unrealised_pnl,
-                        leverage: leverage,
-                        liquidation: liquidation,
+                        avg,
+                        size,
+                        unrealised_pnl,
+                        leverage,
+                        liquidation,
                         opened: Utc.timestamp_millis_opt(opened).unwrap(),
                         updated: updated_datetime,
-                        detail: std::mem::replace(data, Default::default()),
+                        detail: std::mem::take(data),
                     };
 
                     for side in sides {
@@ -936,11 +936,11 @@ impl WebsocketItf {
                     let lock = float::to_decimal_with_json(&data["locked"])?;
                     let asset = Asset {
                         ptime: time.into(),
-                        updated: time.clone(),
+                        updated: time,
                         currency: coin.clone(),
                         free: total - lock,
-                        lock: lock,
-                        detail: std::mem::replace(data, Default::default()),
+                        lock,
+                        detail: std::mem::take(data),
                     };
                     assets.insert_raw(coin, asset);
                 }
@@ -1008,7 +1008,7 @@ impl WebsocketItf {
                 let mut orderbooks = self.orderbooks.write().await;
                 let orderbook = if let Some(orderbook) = orderbooks.get_mut(&symbol) {
                     if root["type"].as_str().unwrap() == "snapshot" {
-                        *orderbook = OrderBook::new(ptime, MarketVal::Symbol(symbol), time.clone());
+                        *orderbook = OrderBook::new(ptime, MarketVal::Symbol(symbol), time);
                         orderbook
                     } else {
                         orderbook.ptime = ptime;
@@ -1016,8 +1016,7 @@ impl WebsocketItf {
                         orderbook
                     }
                 } else {
-                    let orderbook =
-                        OrderBook::new(ptime, MarketVal::Symbol(symbol.clone()), time.clone());
+                    let orderbook = OrderBook::new(ptime, MarketVal::Symbol(symbol.clone()), time);
 
                     orderbooks.insert(symbol.clone(), orderbook);
                     orderbooks.get_mut(&symbol).unwrap()
@@ -1066,7 +1065,7 @@ impl WebsocketItf {
                         } else {
                             OrderSide::Sell
                         },
-                        detail: std::mem::replace(data, Default::default()),
+                        detail: std::mem::take(data),
                     };
 
                     let symbol = data["s"].as_str().unwrap().to_string();
@@ -1110,7 +1109,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
 
         let body = s
             .iter()
-            .map(|(ty, v)| {
+            .flat_map(|(ty, v)| {
                 v.iter()
                     .map(|value| match ty {
                         SubscribeType::Order => "order".to_string(),
@@ -1123,7 +1122,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                                 SubscribeQuantity::Much => 500,
                                 SubscribeQuantity::Least(str) | SubscribeQuantity::Fixed(str) => {
                                     let quantity = str.parse::<usize>().unwrap();
-                                    let levels = vec![1, 50, 200, 500];
+                                    let levels = [1, 50, 200, 500];
                                     let idx = levels.binary_search(&quantity).unwrap_or_else(|e| {
                                         if e >= levels.len() {
                                             levels.len() - 1
@@ -1144,7 +1143,6 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                     })
                     .collect::<Vec<_>>()
             })
-            .flatten()
             .map(|s| json!(s))
             .collect::<Vec<serde_json::Value>>();
 
@@ -1210,40 +1208,37 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
                 }
             }
 
-            Signal::Received(data) => match data {
-                Message::Text(text) => {
-                    let json: serde_json::Value =
-                        serde_json::from_str(text.as_str()).unwrap_or_default();
-                    if json["op"]
-                        .as_str()
-                        .map(|str| str == "auth")
-                        .unwrap_or(false)
-                    {
-                        Ok(SubscribeResult::Authorized(
-                            json["success"].as_bool().unwrap(),
-                        ))
-                    } else if let Some(str) = json["topic"].as_str().map(String::from) {
-                        let path = socket
-                            .get_param_as_connect()
-                            .and_then(|param| {
-                                let last = param.url.path().rsplit("/").next().and_then(|str| {
-                                    if str.is_empty() {
-                                        None
-                                    } else {
-                                        Some(str.to_string())
-                                    }
-                                });
+            Signal::Received(Message::Text(text)) => {
+                let json: serde_json::Value =
+                    serde_json::from_str(text.as_str()).unwrap_or_default();
+                if json["op"]
+                    .as_str()
+                    .map(|str| str == "auth")
+                    .unwrap_or(false)
+                {
+                    Ok(SubscribeResult::Authorized(
+                        json["success"].as_bool().unwrap(),
+                    ))
+                } else if let Some(str) = json["topic"].as_str().map(String::from) {
+                    let path = socket
+                        .get_param_as_connect()
+                        .and_then(|param| {
+                            let last = param.url.path().rsplit("/").next().and_then(|str| {
+                                if str.is_empty() {
+                                    None
+                                } else {
+                                    Some(str.to_string())
+                                }
+                            });
 
-                                last
-                            })
-                            .ok_or(anyhowln!("occur error for parsed url in bybit"))?;
-                        self.parse_private(&path, &str, json).await
-                    } else {
-                        Ok(SubscribeResult::None)
-                    }?
-                }
-                _ => SubscribeResult::None,
-            },
+                            last
+                        })
+                        .ok_or(anyhowln!("occur error for parsed url in bybit"))?;
+                    self.parse_private(&path, &str, json).await
+                } else {
+                    Ok(SubscribeResult::None)
+                }?
+            }
             _ => SubscribeResult::None,
         };
         Ok(result)
@@ -1252,7 +1247,7 @@ impl websocket::ExchangeSocketTrait for WebsocketItf {
     async fn make_websocket_param(
         &self,
         ctx: &ExchangeContextPtr,
-        group: &String,
+        group: &str,
         _request: &Option<(SubscribeType, serde_json::Value)>,
     ) -> anyhow::Result<ConnectParams> {
         let mut param = ctx.param.websocket.clone();

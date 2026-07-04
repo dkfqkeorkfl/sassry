@@ -73,12 +73,12 @@ struct MongoRecord {
     pub expiry_date: OffsetDateTime,
 }
 
-impl Into<TowerRecord> for MongoRecord {
-    fn into(self) -> TowerRecord {
+impl From<MongoRecord> for TowerRecord {
+    fn from(val: MongoRecord) -> Self {
         TowerRecord {
-            id: self.id,
-            data: self.data,
-            expiry_date: self.expiry_date,
+            id: val.id,
+            data: val.data,
+            expiry_date: val.expiry_date,
         }
     }
 }

@@ -505,8 +505,7 @@ impl Server {
                 |hearders: HeaderMap, uri: Uri, State(state): State<Arc<HttpsConfig>>| async move {
                     let host = hearders
                         .get(axum::http::header::HOST)
-                        .map(|h| h.to_str().ok())
-                        .flatten();
+                        .and_then(|h| h.to_str().ok());
                     if host.is_none() {
                         return Err(StatusCode::BAD_REQUEST);
                     }
@@ -526,7 +525,7 @@ impl Server {
             .with_state(config.clone());
 
         let handle = tokio::spawn(async move {
-            let addr = SocketAddr::new(config.addr.clone(), config.http_port.unwrap());
+            let addr = SocketAddr::new(config.addr, config.http_port.unwrap());
             axum_server::bind(addr)
                 .handle(handle)
                 .serve(router.into_make_service())
@@ -593,9 +592,9 @@ impl Server {
         // ServerConfig에서 설정 추출
         let server_tasks = match &server_config {
             ServerConfig::Http(config) => {
-                let addr = config.socket_addr.clone();
+                let addr = config.socket_addr;
                 let http_task = tokio::spawn(async move {
-                    axum_server::bind(addr.clone())
+                    axum_server::bind(addr)
                         .handle(copied_handle)
                         .serve(service)
                         .await
@@ -607,7 +606,7 @@ impl Server {
                 let acceptor =
                     RustlsConfig::from_pem_file(&config.cert_file, &config.key_file).await?;
                 let https_task = tokio::spawn(async move {
-                    axum_server::bind_rustls(addr.clone(), acceptor)
+                    axum_server::bind_rustls(addr, acceptor)
                         .handle(copied_handle.clone())
                         .serve(service)
                         .await
@@ -625,16 +624,16 @@ impl Server {
         };
 
         let mut tasks = vec![shutdown_task];
-        tasks.extend(server_tasks.into_iter());
+        tasks.extend(server_tasks);
 
         cassry::info!(
             "success that open webserver with MiddlewareConfig : {:?}",
             server_config
         );
         Ok(Server {
-            server_config: server_config,
-            middleware_config: middleware_config,
-            handle: handle,
+            server_config,
+            middleware_config,
+            handle,
             tasks,
         })
     }
@@ -642,11 +641,7 @@ impl Server {
     pub async fn run_until_shutdown(self) -> Result<(), ServerErrors> {
         let mut results = Vec::new();
         let mut tasks = self.tasks;
-        let mut shutdown_task_id = if let Some(shutdown_task) = tasks.get(0) {
-            Some(shutdown_task.id())
-        } else {
-            None
-        };
+        let mut shutdown_task_id = tasks.first().map(|shutdown_task| shutdown_task.id());
 
         while !tasks.is_empty() {
             let (result, _idx, remaining) = futures::future::select_all(tasks).await;

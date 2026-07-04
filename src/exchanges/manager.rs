@@ -18,9 +18,9 @@ impl Manager {
     pub fn new(keys: HashMap<ExchangeTag, Arc<ExchangeKey>>, db: Arc<LocalDB>) -> Self {
         Self {
             tags: keys.keys().cloned().collect::<Vec<_>>(),
-            keys: keys,
+            keys,
             instatnts: Default::default(),
-            db: db,
+            db,
         }
     }
 
@@ -77,19 +77,23 @@ impl Manager {
                 } else {
                     "wss://stream.bybit.com"
                 })?;
-                let mut restapi = RestAPIParam::default();
-                restapi.url = if key.is_testnet {
-                    "https://api-testnet.bybit.com"
-                } else {
-                    "https://api.bybit.com"
-                }
-                .to_string();
+                let restapi = RestAPIParam {
+                    url: if key.is_testnet {
+                        "https://api-testnet.bybit.com"
+                    } else {
+                        "https://api.bybit.com"
+                    }
+                    .to_string(),
+                    ..Default::default()
+                };
                 Some((ws, restapi))
             }
             "bithumb" => {
                 let ws = ConnectParams::from_str("wss://ws-api.bithumb.com/websocket")?;
-                let mut restapi = RestAPIParam::default();
-                restapi.url = "https://api.bithumb.com".to_string();
+                let restapi = RestAPIParam {
+                    url: "https://api.bithumb.com".to_string(),
+                    ..Default::default()
+                };
                 Some((ws, restapi))
             }
             _ => None,
@@ -98,9 +102,9 @@ impl Manager {
 
         let param = ExchangeParam {
             websocket: ws,
-            restapi: restapi,
+            restapi,
             key: key.clone(),
-            config: config,
+            config,
             kind: MarketOpt::All,
         };
 

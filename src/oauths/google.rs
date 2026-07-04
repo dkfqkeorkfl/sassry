@@ -10,6 +10,22 @@ use cassry::*;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+type GoogleOAuthClient = oauth2::Client<
+    StandardErrorResponse<oauth2::basic::BasicErrorResponseType>,
+    StandardTokenResponse<oauth2::EmptyExtraTokenFields, oauth2::basic::BasicTokenType>,
+    StandardTokenIntrospectionResponse<
+        oauth2::EmptyExtraTokenFields,
+        oauth2::basic::BasicTokenType,
+    >,
+    StandardRevocableToken,
+    StandardErrorResponse<RevocationErrorResponseType>,
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointSet,
+    EndpointSet,
+>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleProfile {
     pub id: String,
@@ -28,21 +44,7 @@ pub struct AuthRequest {
 }
 
 pub struct GoogleOAuth {
-    client: oauth2::Client<
-        StandardErrorResponse<oauth2::basic::BasicErrorResponseType>,
-        StandardTokenResponse<oauth2::EmptyExtraTokenFields, oauth2::basic::BasicTokenType>,
-        StandardTokenIntrospectionResponse<
-            oauth2::EmptyExtraTokenFields,
-            oauth2::basic::BasicTokenType,
-        >,
-        StandardRevocableToken,
-        StandardErrorResponse<RevocationErrorResponseType>,
-        EndpointSet,
-        EndpointNotSet,
-        EndpointNotSet,
-        EndpointSet,
-        EndpointSet,
-    >,
+    client: GoogleOAuthClient,
     request: oauth2::reqwest::Client,
 }
 
@@ -68,10 +70,7 @@ impl GoogleOAuth {
             .set_redirect_uri(redirect_url)
             .set_revocation_url(revocation_url);
 
-        let s = Self {
-            client: client,
-            request: request,
-        };
+        let s = Self { client, request };
 
         Ok(s)
     }

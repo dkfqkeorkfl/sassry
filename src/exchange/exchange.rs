@@ -22,7 +22,7 @@ pub struct RequestParam {
 impl RequestParam {
     pub fn new_mp(method: reqwest::Method, path: &str) -> Self {
         RequestParam {
-            method: method,
+            method,
             path: path.to_string(),
             headers: Default::default(),
             body: Default::default(),
@@ -31,10 +31,10 @@ impl RequestParam {
 
     pub fn new_mpb(method: reqwest::Method, path: &str, body: serde_json::Value) -> Self {
         RequestParam {
-            method: method,
+            method,
             path: path.to_string(),
             headers: Default::default(),
-            body: body,
+            body,
         }
     }
 
@@ -45,10 +45,10 @@ impl RequestParam {
         body: serde_json::Value,
     ) -> Self {
         RequestParam {
-            method: method,
+            method,
             path: path.to_string(),
-            headers: headers,
-            body: body,
+            headers,
+            body,
         }
     }
 }
@@ -135,7 +135,7 @@ pub trait RestApiTrait: Send + Sync + 'static {
     where
         Self: Sized,
     {
-        let signed_result = self.sign(&context, param).await?;
+        let signed_result = self.sign(context, param).await?;
         let fullpath = if signed_result.method == reqwest::Method::GET
             || signed_result.method == reqwest::Method::DELETE
         {
@@ -294,14 +294,12 @@ impl Exchange {
             async move {
                 if let Some(context_ptr) = context_wpt.upgrade() {
                     match &signal {
-                        Signal::Received(m) => {
-                            if let Message::Pong(_) = m {
-                                cassry::trace!(
-                                    "signal({:?}) subsribe({})",
-                                    &signal,
-                                    serde_json::to_string(&subsicrebe).unwrap_or("".to_string())
-                                );
-                            }
+                        Signal::Received(Message::Pong(_)) => {
+                            cassry::trace!(
+                                "signal({:?}) subsribe({})",
+                                &signal,
+                                serde_json::to_string(&subsicrebe).unwrap_or("".to_string())
+                            );
                         }
                         Signal::Opened => {
                             if let Some(restapi) = restapi_wpt.upgrade() {
@@ -399,7 +397,7 @@ impl Exchange {
         }
 
         let ret = Arc::new(Exchange {
-            context: context,
+            context,
             restapi,
             websocket: ws,
         });
@@ -497,7 +495,7 @@ impl Exchange {
             } else {
                 cassry::debug!(
                     "imported position from storage but cannot find market({}).",
-                    serde_json::to_string(&market.market_id).unwrap_or(String::default())
+                    serde_json::to_string(&market.market_id).unwrap_or_default()
                 );
 
                 anyhow::Result::Err(locked.clone())
@@ -527,7 +525,7 @@ impl Exchange {
                         .await?;
                     cassry::debug!(
                         "synchronized position from requested data to storage : market({})",
-                        serde_json::to_string(&market.market_id).unwrap_or(String::default())
+                        serde_json::to_string(&market.market_id).unwrap_or_default()
                     );
                 }
 
@@ -561,11 +559,7 @@ impl Exchange {
 
         let ret = if can_takeout {
             let locked = self.context.storage.orderbook.read().await;
-            if let Some(orderbook) = locked.get(&market.market_id).cloned() {
-                Some(orderbook)
-            } else {
-                None
-            }
+            locked.get(&market.market_id).cloned()
         } else {
             None
         };
@@ -726,7 +720,7 @@ impl Exchange {
         if can_takeout {
             let mut remover = Vec::<String>::default();
             for oid in restapi_param.get_datas().keys() {
-                let result = self.context.find_order(&oid, &market.market_id).await?;
+                let result = self.context.find_order(oid, &market.market_id).await?;
                 if let Some(order) = result {
                     remover.push(oid.clone());
                     already_synced.insert(oid.clone(), order.clone());
@@ -782,11 +776,9 @@ impl Exchange {
                         }
                     }
                 }
-                OrderState::Ordering(..) => {
-                    if ret.errors.contains_key(&value.oid) {
-                        ret.success.insert(value.clone());
-                        ret.errors.remove(&value.oid);
-                    }
+                OrderState::Ordering(..) if ret.errors.contains_key(&value.oid) => {
+                    ret.success.insert(value.clone());
+                    ret.errors.remove(&value.oid);
                 }
                 _ => {}
             }
