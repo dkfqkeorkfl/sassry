@@ -1,0 +1,20 @@
+# lefthook — sassry(leaf) 네이티브 git 훅. parent 와 동일 정책(commit=fmt, push=clippy).
+# 설치: 이 서브모듈 디렉터리에서 `lefthook install` 을 1회 실행해 .git/hooks 를 배선한다.
+# 주의: pre-push clippy 는 ../cassry(path 의존)를 컴파일하므로 cassry 가 형제 경로에
+#       존재해야 한다. parent 모노레포 레이아웃에서 작업하면 항상 충족된다.
+#       sassry 를 단독 클론해 작업하는 경우엔 clippy 훅이 실패할 수 있다(그 경우 GitHub CI 로 검증).
+
+pre-commit:
+  parallel: true
+  commands:
+    rustfmt:
+      # fmt 는 의존성 해석 불요 → 단독으로도 동작.
+      glob: "*.rs"
+      run: cargo fmt --all --check
+      fail_text: "rustfmt check failed — run `cargo fmt --all`, then re-stage."
+
+pre-push:
+  commands:
+    clippy:
+      run: cargo clippy --all-targets -- -D warnings
+      fail_text: "clippy found issues — fix them before pushing. (../cassry 필요 — 모노레포 레이아웃에서 실행)"

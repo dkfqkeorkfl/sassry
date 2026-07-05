@@ -1,0 +1,72 @@
+# CI — sassry(leaf) 자체 검증 게이트. parent(sas-bone)와 동일하게 fmt + clippy + build.
+# ⚠️ sassry 는 cassry = { path = "../cassry" }·cassry-derive = { path = "../cassry/derive" }
+#    를 하드 참조하므로 단독 레포에선 빌드가 불가하다. clippy/build 잡은 cassry 를
+#    형제 경로로 함께 체크아웃해 ../cassry 를 충족시킨다(cassry 는 public → 익명 클론 가능).
+#    fmt 는 의존성 해석이 없어 cassry 없이 sassry 소스만 검사한다.
+# 액션은 major 태그로 핀하고 Renovate 가 추적·bump 한다.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # fmt 는 의존성 해석 불요 → sassry 소스만 검사(cassry 체크아웃 없이).
+      - run: cargo fmt --all --check
+
+  clippy-build:
+    name: clippy + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # sassry 는 GITHUB_WORKSPACE/sassry, cassry 는 형제 GITHUB_WORKSPACE/cassry 로 배치
+      # → sassry/Cargo.toml 의 ../cassry·../cassry/derive 가 해석된다.
+      - name: Checkout sassry
+        uses: actions/checkout@v4
+        with:
+          path: sassry
+      - name: Checkout cassry (path dependency, public)
+        uses: actions/checkout@v4
+        with:
+          repository: dkfqkeorkfl/cassry
+          path: cassry
+      # cassry(rocksdb 등)·sassry(rustls/aws-lc) 네이티브 빌드 툴체인.
+      - name: Install native build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang libclang-dev cmake libssl-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sassry
+      # clippy 는 sassry 패키지에만 적용(cassry 는 path 의존 → 컴파일만, 린트 대상 아님).
+      - name: Clippy (deny warnings)
+        working-directory: sassry
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build
+        working-directory: sassry
+        run: cargo build

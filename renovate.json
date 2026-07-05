@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "7 days",
+  "packageRules": [
+    {
+      "description": "메이저는 그룹서 제외·개별 PR + 긴 cooldown(수동 검토).",
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "30 days"
+    },
+    {
+      "description": "런타임(prod/build) minor·patch 묶음.",
+      "matchManagers": ["cargo"],
+      "matchDepTypes": ["dependencies", "build-dependencies", "workspace.dependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "cargo production (minor & patch)"
+    },
+    {
+      "description": "개발(dev) minor·patch 묶음.",
+      "matchManagers": ["cargo"],
+      "matchDepTypes": ["dev-dependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "cargo development (minor & patch)"
+    },
+    {
+      "description": "네이티브 -sys 단독 격리(sassry 는 rustls/aws-lc-sys 등). 마지막 규칙이라 위 그룹을 덮어씀(last-match wins).",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["/-sys$/"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "cargo native -sys"
+    },
+    {
+      "description": "GitHub Actions minor·patch 묶음.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "github-actions (minor & patch)"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "minimumReleaseAge": "0 days"
+  }
+}
